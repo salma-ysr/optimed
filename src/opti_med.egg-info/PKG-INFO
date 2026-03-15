@@ -1,0 +1,111 @@
+Metadata-Version: 2.4
+Name: opti-med
+Version: 0.1.0
+Summary: Minimal structured-data foundations for the OPTI-MED MVP.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pandas<3.0,>=2.1
+
+# OPTI-MED
+
+Minimal structured-data foundations for the OPTI-MED MVP. This phase sets up the Python project, configurable MIMIC-IV paths, core CSV loaders, and schema validation for the first hospital tables used by the pipeline.
+
+## Scope in this phase
+
+- Python `src/` project layout
+- pandas-based loading for core MIMIC-IV hospital tables
+- Configurable dataset root and file extension
+- Required-column validation with clear error messages
+- One CLI command that loads all core tables and prints basic shape summaries
+
+## Project structure
+
+```text
+.
+├── pyproject.toml
+├── README.md
+├── data/
+├── documentation/
+└── src/
+    └── opti_med/
+        ├── cli/
+        ├── config.py
+        └── data_access/
+```
+
+## Requirements
+
+- Python 3.10+
+- A local MIMIC-IV dataset root containing a `hosp/` folder
+
+Expected files for this phase:
+
+- `hosp/patients.csv` or `hosp/patients.csv.gz`
+- `hosp/admissions.csv` or `hosp/admissions.csv.gz`
+- `hosp/prescriptions.csv` or `hosp/prescriptions.csv.gz`
+- `hosp/diagnoses_icd.csv` or `hosp/diagnoses_icd.csv.gz`
+- `hosp/labevents.csv` or `hosp/labevents.csv.gz`
+
+## Setup
+
+Create a virtual environment and install the package in editable mode:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+## Configuration
+
+By default, the code looks for the demo dataset already present in this repo:
+
+```text
+data/external/mimic-iv-clinical-database-demo-2.2
+```
+
+You can override settings with environment variables:
+
+```bash
+export OPTI_MED_DATA_ROOT=/path/to/mimic-iv-root
+export OPTI_MED_FILE_EXTENSION=.csv.gz
+```
+
+Or pass the root path directly on the command line:
+
+```bash
+python3 -m opti_med.cli.load_core_tables --data-root /path/to/mimic-iv-root
+```
+
+If your files are uncompressed CSVs, also pass:
+
+```bash
+python3 -m opti_med.cli.load_core_tables --data-root /path/to/mimic-iv-root --file-extension .csv
+```
+
+## Usage
+
+Run the core loader:
+
+```bash
+python3 -m opti_med.cli.load_core_tables
+```
+
+Expected output format:
+
+```text
+Loaded core MIMIC-IV tables successfully.
+Data root: data/external/mimic-iv-clinical-database-demo-2.2
+- patients: rows=..., columns=...
+- admissions: rows=..., columns=...
+- prescriptions: rows=..., columns=...
+- diagnoses_icd: rows=..., columns=...
+- labevents: rows=..., columns=...
+```
+
+If a required file is missing or required columns are absent, the command exits with a clear error message.
+
+## Notes
+
+- This phase does not implement feature engineering, scoring, APIs, or downstream modeling.
+- The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.

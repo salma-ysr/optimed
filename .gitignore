@@ -1,0 +1,12 @@
+# virtual env
+.venv/
+
+# data
+data/external/
+
+# python cache
+__pycache__/
+*.pyc
+
+# mac
+.DS_Store
