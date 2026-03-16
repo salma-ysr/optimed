@@ -5,7 +5,7 @@
 data/external/
 
 # python cache
-__pycache__/
+src/opti_med/__pycache__/
 *.pyc
 
 # mac

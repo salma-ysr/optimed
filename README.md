@@ -1,14 +1,17 @@
 # OPTI-MED
 
-Minimal structured-data foundations for the OPTI-MED MVP. This phase sets up the Python project, configurable MIMIC-IV paths, core CSV loaders, and schema validation for the first hospital tables used by the pipeline.
+Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders plus a minimal older-adult patient-medication-admission cohort builder.
 
-## Scope in this phase
+## Scope implemented so far
 
 - Python `src/` project layout
 - pandas-based loading for core MIMIC-IV hospital tables
 - Configurable dataset root and file extension
 - Required-column validation with clear error messages
 - One CLI command that loads all core tables and prints basic shape summaries
+- A minimal cohort builder that joins `patients`, `admissions`, and `prescriptions`
+- Older-adult restriction based on MIMIC-IV `anchor_age`
+- Interim cohort output with one row per medication exposure during an admission
 
 ## Project structure
 
@@ -61,6 +64,8 @@ You can override settings with environment variables:
 ```bash
 export OPTI_MED_DATA_ROOT=/path/to/mimic-iv-root
 export OPTI_MED_FILE_EXTENSION=.csv.gz
+export OPTI_MED_INTERIM_ROOT=data/interim
+export OPTI_MED_OLDER_ADULT_AGE_THRESHOLD=65
 ```
 
 Or pass the root path directly on the command line:
@@ -97,7 +102,40 @@ Data root: data/external/mimic-iv-clinical-database-demo-2.2
 
 If a required file is missing or required columns are absent, the command exits with a clear error message.
 
-## !WIP!
+Build the minimal cohort:
 
-- This phase does not implement feature engineering, scoring, APIs, or downstream modeling.
+```bash
+python3 -m opti_med.cli.build_cohort
+```
+
+Optional overrides:
+
+```bash
+python3 -m opti_med.cli.build_cohort \
+  --data-root /path/to/mimic-iv-root \
+  --file-extension .csv.gz \
+  --age-threshold 65 \
+  --output data/interim/older_adult_medication_cohort.csv
+```
+
+The cohort output contains:
+
+- `subject_id`
+- `hadm_id`
+- `sex`
+- `age_proxy`
+- `age_group`
+- `admission_type`
+- `admittime`
+- `dischtime`
+- `length_of_stay_days`
+- `drug`
+- `starttime`
+- `stoptime`
+
+The cohort builder validates join keys, rejects duplicate patient or admission identifiers in the source tables, checks for invalid admission timestamps, and fails fast on duplicate medication exposure rows in the final output.
+
+## Notes
+
+- This repo still does not implement diagnoses features, lab extraction, scoring, APIs, or downstream modeling.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.

@@ -105,7 +105,7 @@ Data root: data/external/mimic-iv-clinical-database-demo-2.2
 
 If a required file is missing or required columns are absent, the command exits with a clear error message.
 
-## Notes
+## !WIP!
 
 - This phase does not implement feature engineering, scoring, APIs, or downstream modeling.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.
