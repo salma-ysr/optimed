@@ -48,6 +48,10 @@ class OlderAdultMedicationCohortBuilder:
     def build(self) -> pd.DataFrame:
         """Load source tables and construct the cohort dataframe."""
         tables = self.loader.load_all()
+        return self.build_from_tables(tables)
+
+    def build_from_tables(self, tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Construct the cohort dataframe from preloaded source tables."""
         patients = tables["patients"].copy()
         admissions = tables["admissions"].copy()
         prescriptions = tables["prescriptions"].copy()

@@ -12,6 +12,7 @@ Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes 
 - A minimal cohort builder that joins `patients`, `admissions`, and `prescriptions`
 - Older-adult restriction based on MIMIC-IV `anchor_age`
 - Interim cohort output with one row per medication exposure during an admission
+- A processed cohort builder with diagnosis, creatinine, medication burden, and high-risk medication features
 
 ## Project structure
 
@@ -65,7 +66,11 @@ You can override settings with environment variables:
 export OPTI_MED_DATA_ROOT=/path/to/mimic-iv-root
 export OPTI_MED_FILE_EXTENSION=.csv.gz
 export OPTI_MED_INTERIM_ROOT=data/interim
+export OPTI_MED_PROCESSED_ROOT=data/processed
 export OPTI_MED_OLDER_ADULT_AGE_THRESHOLD=65
+export OPTI_MED_POLYPHARMACY_THRESHOLD=5
+export OPTI_MED_RENAL_RISK_CREATININE_THRESHOLD=1.5
+export OPTI_MED_SERUM_CREATININE_ITEMIDS=50912,51081,51977,52546
 ```
 
 Or pass the root path directly on the command line:
@@ -133,9 +138,34 @@ The cohort output contains:
 - `starttime`
 - `stoptime`
 
-The cohort builder validates join keys, rejects duplicate patient or admission identifiers in the source tables, checks for invalid admission timestamps, and fails fast on duplicate medication exposure rows in the final output.
+The cohort builder validates join keys, rejects duplicate patient or admission identifiers in the source tables, checks for invalid admission timestamps, and collapses repeated medication exposure rows found in the source prescriptions table.
+
+Build the processed cohort with MVP features:
+
+```bash
+python3 -m opti_med.cli.build_features
+```
+
+Optional overrides:
+
+```bash
+python3 -m opti_med.cli.build_features \
+  --data-root data/external/mimic-iv-clinical-database-demo-2.2 \
+  --file-extension .csv.gz \
+  --age-threshold 65 \
+  --polypharmacy-threshold 5 \
+  --renal-risk-threshold 1.5 \
+  --output data/processed/older_adult_medication_features.csv
+```
+
+The processed output adds:
+
+- diagnosis flags: `ckd_flag`, `dementia_flag`, `delirium_flag`, `heart_failure_flag`, `diabetes_flag`
+- creatinine features: `creatinine_first`, `creatinine_max`, `creatinine_mean`, `renal_risk_flag`
+- medication burden: `total_medication_count`, `polypharmacy_flag`
+- high-risk medication flags: `benzodiazepine_flag`, `opioid_flag`, `anticholinergic_flag`, `ppi_flag`, `antipsychotic_flag`
 
 ## Notes
 
-- This repo still does not implement diagnoses features, lab extraction, scoring, APIs, or downstream modeling.
+- This repo still does not implement scoring, APIs, or downstream modeling.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.
