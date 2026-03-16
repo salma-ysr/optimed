@@ -20,6 +20,7 @@ class Settings:
     file_extension: str = ".csv.gz"
     interim_root: Path = Path("data/interim")
     processed_root: Path = Path("data/processed")
+    final_root: Path = Path("data/final")
     older_adult_age_threshold: int = 65
     polypharmacy_threshold: int = 5
     renal_risk_creatinine_threshold: float = 1.5
@@ -40,6 +41,11 @@ class Settings:
         """Return the default processed cohort output path."""
         return self.processed_root / "older_adult_medication_features.csv"
 
+    @property
+    def scored_output_path(self) -> Path:
+        """Return the default scored cohort output path."""
+        return self.final_root / "older_adult_medication_scores.csv"
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Build settings from environment variables."""
@@ -48,6 +54,7 @@ class Settings:
         file_extension = os.getenv("OPTI_MED_FILE_EXTENSION", ".csv.gz")
         interim_root = Path(os.getenv("OPTI_MED_INTERIM_ROOT", "data/interim"))
         processed_root = Path(os.getenv("OPTI_MED_PROCESSED_ROOT", "data/processed"))
+        final_root = Path(os.getenv("OPTI_MED_FINAL_ROOT", "data/final"))
         older_adult_age_threshold = int(
             os.getenv("OPTI_MED_OLDER_ADULT_AGE_THRESHOLD", "65")
         )
@@ -69,6 +76,7 @@ class Settings:
             file_extension=file_extension,
             interim_root=interim_root,
             processed_root=processed_root,
+            final_root=final_root,
             older_adult_age_threshold=older_adult_age_threshold,
             polypharmacy_threshold=polypharmacy_threshold,
             renal_risk_creatinine_threshold=renal_risk_creatinine_threshold,
