@@ -8,5 +8,8 @@ data/external/
 src/opti_med/__pycache__/
 *.pyc
 
+#modules
+frontend/node_modules/
+
 # mac
 .DS_Store

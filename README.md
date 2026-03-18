@@ -14,6 +14,8 @@ Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes 
 - Interim cohort output with one row per medication exposure during an admission
 - A processed cohort builder with diagnosis, creatinine, medication burden, and high-risk medication features
 - A final rule-based scorer with a numeric score, priority label, and readable explanation per row
+- A minimal FastAPI backend for browsing scored rows locally
+- A lightweight React frontend for browsing scored records and opening a details page
 
 ## Project structure
 
@@ -193,7 +195,102 @@ The scored output adds:
 
 The scoring rules are intentionally transparent and live in [src/opti_med/scoring/rules.py](/Users/salmayousry/Desktop/optimed/src/opti_med/scoring/rules.py) so they can be inspected and revised without changing the rest of the pipeline.
 
+## Backend API
+
+Install dependencies, including FastAPI and Uvicorn:
+
+```bash
+pip install -e .
+```
+
+Run the API locally:
+
+```bash
+uvicorn opti_med.api.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+The API is local-only by default because it binds to `127.0.0.1`.
+Interactive docs are available at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Available endpoints:
+
+- `GET /health`
+  - simple health check plus whether the scored output file exists
+- `GET /scores`
+  - list scored medication rows
+  - supports `limit`, `offset`, `subject_id`, `hadm_id`, and `risk_label`
+- `GET /admissions`
+  - return admission-level review summaries aggregated from the scored medication rows
+- `GET /scores/admission`
+  - return the admission-level details view payload for one `subject_id` and `hadm_id`, including medication review and recommended review sections
+- `GET /scores/row`
+  - retrieve one scored row using `subject_id`, `hadm_id`, `drug`, and `starttime`
+- `GET /scores/latest`
+  - return metadata for the latest saved scored output file
+- `POST /scores/refresh`
+  - rebuild the scored output and reload it for the API
+
+Example requests:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl "http://127.0.0.1:8000/admissions?limit=10"
+curl "http://127.0.0.1:8000/scores?limit=5"
+curl "http://127.0.0.1:8000/scores?risk_label=high&limit=10"
+curl "http://127.0.0.1:8000/scores/admission?subject_id=${SUBJECT_ID}&hadm_id=${HADM_ID}"
+curl "http://127.0.0.1:8000/scores/row?subject_id=${SUBJECT_ID}&hadm_id=${HADM_ID}&drug=${DRUG}&starttime=${STARTTIME}"
+curl http://127.0.0.1:8000/scores/latest
+curl -X POST http://127.0.0.1:8000/scores/refresh
+```
+
+## Frontend
+
+The frontend is a lightweight Vite React TypeScript app in [frontend/](/Users/salmayousry/Desktop/optimed/frontend).
+
+Install and run it locally:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+By default, the frontend expects the backend at:
+
+```text
+http://127.0.0.1:8000
+```
+
+If you need a different backend URL, create a local environment variable before starting Vite:
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Frontend pages in this phase:
+
+- `/`
+  - admission-level medication risk review dashboard
+- `/records/:subjectId/:hadmId`
+  - admission-centric review page with recommended review medications, full medication list, labs, risk factors, and score explanation
+
+Recommended local workflow:
+
+```bash
+# terminal 1
+uvicorn opti_med.api.app:app --reload --host 127.0.0.1 --port 8000
+
+# terminal 2
+cd frontend
+npm install
+npm run dev
+```
+
 ## Notes
 
-- This repo still does not implement APIs or downstream modeling.
+- This repo still does not implement downstream modeling.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.

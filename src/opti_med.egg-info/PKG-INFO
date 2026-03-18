@@ -4,19 +4,28 @@ Version: 0.1.0
 Summary: Minimal structured-data foundations for the OPTI-MED MVP.
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1.0,>=0.110
 Requires-Dist: pandas<3.0,>=2.1
+Requires-Dist: uvicorn<1.0,>=0.29
 
 # OPTI-MED
 
-Minimal structured-data foundations for the OPTI-MED MVP. This phase sets up the Python project, configurable MIMIC-IV paths, core CSV loaders, and schema validation for the first hospital tables used by the pipeline.
+Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders plus a minimal older-adult patient-medication-admission cohort builder.
 
-## Scope in this phase
+## Scope implemented so far
 
 - Python `src/` project layout
 - pandas-based loading for core MIMIC-IV hospital tables
 - Configurable dataset root and file extension
 - Required-column validation with clear error messages
 - One CLI command that loads all core tables and prints basic shape summaries
+- A minimal cohort builder that joins `patients`, `admissions`, and `prescriptions`
+- Older-adult restriction based on MIMIC-IV `anchor_age`
+- Interim cohort output with one row per medication exposure during an admission
+- A processed cohort builder with diagnosis, creatinine, medication burden, and high-risk medication features
+- A final rule-based scorer with a numeric score, priority label, and readable explanation per row
+- A minimal FastAPI backend for browsing scored rows locally
+- A lightweight React frontend for browsing scored records and opening a details page
 
 ## Project structure
 
@@ -69,6 +78,13 @@ You can override settings with environment variables:
 ```bash
 export OPTI_MED_DATA_ROOT=/path/to/mimic-iv-root
 export OPTI_MED_FILE_EXTENSION=.csv.gz
+export OPTI_MED_INTERIM_ROOT=data/interim
+export OPTI_MED_PROCESSED_ROOT=data/processed
+export OPTI_MED_FINAL_ROOT=data/final
+export OPTI_MED_OLDER_ADULT_AGE_THRESHOLD=65
+export OPTI_MED_POLYPHARMACY_THRESHOLD=5
+export OPTI_MED_RENAL_RISK_CREATININE_THRESHOLD=1.5
+export OPTI_MED_SERUM_CREATININE_ITEMIDS=50912,51081,51977,52546
 ```
 
 Or pass the root path directly on the command line:
@@ -105,7 +121,186 @@ Data root: data/external/mimic-iv-clinical-database-demo-2.2
 
 If a required file is missing or required columns are absent, the command exits with a clear error message.
 
-## !WIP!
+Build the minimal cohort:
 
-- This phase does not implement feature engineering, scoring, APIs, or downstream modeling.
+```bash
+python3 -m opti_med.cli.build_cohort
+```
+
+Optional overrides:
+
+```bash
+python3 -m opti_med.cli.build_cohort \
+  --data-root /path/to/mimic-iv-root \
+  --file-extension .csv.gz \
+  --age-threshold 65 \
+  --output data/interim/older_adult_medication_cohort.csv
+```
+
+The cohort output contains:
+
+- `subject_id`
+- `hadm_id`
+- `sex`
+- `age_proxy`
+- `age_group`
+- `admission_type`
+- `admittime`
+- `dischtime`
+- `length_of_stay_days`
+- `drug`
+- `starttime`
+- `stoptime`
+
+The cohort builder validates join keys, rejects duplicate patient or admission identifiers in the source tables, checks for invalid admission timestamps, and collapses repeated medication exposure rows found in the source prescriptions table.
+
+Build the processed cohort with MVP features:
+
+```bash
+python3 -m opti_med.cli.build_features
+```
+
+Optional overrides:
+
+```bash
+python3 -m opti_med.cli.build_features \
+  --data-root data/external/mimic-iv-clinical-database-demo-2.2 \
+  --file-extension .csv.gz \
+  --age-threshold 65 \
+  --polypharmacy-threshold 5 \
+  --renal-risk-threshold 1.5 \
+  --output data/processed/older_adult_medication_features.csv
+```
+
+The processed output adds:
+
+- diagnosis flags: `ckd_flag`, `dementia_flag`, `delirium_flag`, `heart_failure_flag`, `diabetes_flag`
+- creatinine features: `creatinine_first`, `creatinine_max`, `creatinine_mean`, `renal_risk_flag`
+- medication burden: `total_medication_count`, `polypharmacy_flag`
+- high-risk medication flags: `benzodiazepine_flag`, `opioid_flag`, `anticholinergic_flag`, `ppi_flag`, `antipsychotic_flag`
+
+Build the final scored cohort:
+
+```bash
+python3 -m opti_med.cli.build_scores
+```
+
+Optional overrides:
+
+```bash
+python3 -m opti_med.cli.build_scores \
+  --data-root data/external/mimic-iv-clinical-database-demo-2.2 \
+  --file-extension .csv.gz \
+  --age-threshold 65 \
+  --polypharmacy-threshold 5 \
+  --renal-risk-threshold 1.5 \
+  --output data/final/older_adult_medication_scores.csv
+```
+
+The scored output adds:
+
+- `deprescribing_priority_score`
+- `deprescribing_priority_label`
+- `deprescribing_priority_explanation`
+
+The scoring rules are intentionally transparent and live in [src/opti_med/scoring/rules.py](/Users/salmayousry/Desktop/optimed/src/opti_med/scoring/rules.py) so they can be inspected and revised without changing the rest of the pipeline.
+
+## Backend API
+
+Install dependencies, including FastAPI and Uvicorn:
+
+```bash
+pip install -e .
+```
+
+Run the API locally:
+
+```bash
+uvicorn opti_med.api.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+The API is local-only by default because it binds to `127.0.0.1`.
+Interactive docs are available at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Available endpoints:
+
+- `GET /health`
+  - simple health check plus whether the scored output file exists
+- `GET /scores`
+  - list scored medication rows
+  - supports `limit`, `offset`, `subject_id`, `hadm_id`, and `risk_label`
+- `GET /admissions`
+  - return admission-level review summaries aggregated from the scored medication rows
+- `GET /scores/admission`
+  - return the admission-level details view payload for one `subject_id` and `hadm_id`, including medication review and recommended review sections
+- `GET /scores/row`
+  - retrieve one scored row using `subject_id`, `hadm_id`, `drug`, and `starttime`
+- `GET /scores/latest`
+  - return metadata for the latest saved scored output file
+- `POST /scores/refresh`
+  - rebuild the scored output and reload it for the API
+
+Example requests:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl "http://127.0.0.1:8000/admissions?limit=10"
+curl "http://127.0.0.1:8000/scores?limit=5"
+curl "http://127.0.0.1:8000/scores?risk_label=high&limit=10"
+curl "http://127.0.0.1:8000/scores/admission?subject_id=${SUBJECT_ID}&hadm_id=${HADM_ID}"
+curl "http://127.0.0.1:8000/scores/row?subject_id=${SUBJECT_ID}&hadm_id=${HADM_ID}&drug=${DRUG}&starttime=${STARTTIME}"
+curl http://127.0.0.1:8000/scores/latest
+curl -X POST http://127.0.0.1:8000/scores/refresh
+```
+
+## Frontend
+
+The frontend is a lightweight Vite React TypeScript app in [frontend/](/Users/salmayousry/Desktop/optimed/frontend).
+
+Install and run it locally:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+By default, the frontend expects the backend at:
+
+```text
+http://127.0.0.1:8000
+```
+
+If you need a different backend URL, create a local environment variable before starting Vite:
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Frontend pages in this phase:
+
+- `/`
+  - admission-level medication risk review dashboard
+- `/records/:subjectId/:hadmId`
+  - admission-centric review page with recommended review medications, full medication list, labs, risk factors, and score explanation
+
+Recommended local workflow:
+
+```bash
+# terminal 1
+uvicorn opti_med.api.app:app --reload --host 127.0.0.1 --port 8000
+
+# terminal 2
+cd frontend
+npm install
+npm run dev
+```
+
+## Notes
+
+- This repo still does not implement downstream modeling.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.
