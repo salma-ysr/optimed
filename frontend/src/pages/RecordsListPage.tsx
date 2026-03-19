@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  getAdmissionSummaries,
-  getLatestScoredOutput,
-  refreshScores,
-} from "../api/client";
+import { getAdmissionSummaries, getLatestScoredOutput } from "../api/client";
 import type { AdmissionSummary, ScoredOutputSummary } from "../types";
+import { translateDriverList, translateRiskLabel } from "../uiText";
 
 function scoreTone(label: AdmissionSummary["overall_priority_label"]) {
   if (label === "high") {
@@ -21,7 +18,6 @@ export function RecordsListPage() {
   const [rows, setRows] = useState<AdmissionSummary[]>([]);
   const [summary, setSummary] = useState<ScoredOutputSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,30 +35,13 @@ export function RecordsListPage() {
       setRows(rowsResponse.rows);
       setSummary(latestSummary);
     } catch (caughtError) {
-      setError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : "Failed to load admission summaries from the backend.",
-      );
+      const detail =
+        caughtError instanceof Error && caughtError.message
+          ? ` Détail: ${caughtError.message}`
+          : "";
+      setError(`Impossible de charger les résumés d’hospitalisation depuis le backend.${detail}`);
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function handleRefreshScores() {
-    setIsRefreshing(true);
-    setError(null);
-    try {
-      await refreshScores();
-      await loadPageData();
-    } catch (caughtError) {
-      setError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : "Failed to refresh scored output.",
-      );
-    } finally {
-      setIsRefreshing(false);
     }
   }
 
@@ -71,29 +50,19 @@ export function RecordsListPage() {
       <section className="hero-panel">
         <div>
           <p className="eyebrow">OPTI-MED MVP</p>
-          <h1>Medication Risk Review Dashboard</h1>
+          <h1>Tableau de revue du risque médicamenteux</h1>
           <p className="hero-copy">
-            Review each admission as a whole and identify which medications may deserve
-            reconsideration for older adults during the hospital stay.
+            Examinez chaque hospitalisation dans son ensemble et identifiez les
+            médicaments qui méritent une réévaluation chez les patients âgés pendant
+            le séjour hospitalier.
           </p>
-        </div>
-        <div className="hero-actions">
-          <button
-            className="primary-button"
-            onClick={() => {
-              void handleRefreshScores();
-            }}
-            disabled={isRefreshing}
-          >
-            {isRefreshing ? "Refreshing..." : "Refresh Scores"}
-          </button>
         </div>
       </section>
 
       {summary ? (
         <section className="summary-grid">
           <article className="summary-card">
-            <span className="summary-label">Admissions reviewed</span>
+            <span className="summary-label">Hospitalisations revues</span>
             <strong>{summary.unique_admissions.toLocaleString()}</strong>
           </article>
           <article className="summary-card">
@@ -101,23 +70,23 @@ export function RecordsListPage() {
             <strong>{summary.unique_subjects.toLocaleString()}</strong>
           </article>
           <article className="summary-card">
-            <span className="summary-label">Medication rows scored</span>
+            <span className="summary-label">Lignes médicamenteuses scorées</span>
             <strong>{summary.row_count.toLocaleString()}</strong>
           </article>
           <article className="summary-card">
-            <span className="summary-label">Last updated</span>
+            <span className="summary-label">Dernière mise à jour</span>
             <strong>{new Date(summary.last_modified).toLocaleString()}</strong>
           </article>
         </section>
       ) : null}
 
       {isLoading ? (
-        <section className="state-panel">Loading admissions for clinical review...</section>
+        <section className="state-panel">Chargement des hospitalisations à revoir...</section>
       ) : null}
 
       {!isLoading && error ? (
         <section className="state-panel error-panel">
-          <strong>Unable to load admissions.</strong>
+          <strong>Impossible de charger les hospitalisations.</strong>
           <p>{error}</p>
         </section>
       ) : null}
@@ -135,59 +104,59 @@ export function RecordsListPage() {
                       Patient {row.subject_id} / Admission {row.hadm_id}
                     </p>
                     <p className="record-subtitle">
-                      {row.sex} • Age {row.age_proxy} ({row.age_group}) • {row.admission_type}
+                      {row.sex} • Âge {row.age_proxy} ({row.age_group}) • {row.admission_type}
                     </p>
                   </div>
                   <span className={scoreTone(row.overall_priority_label)}>
-                    {row.overall_priority_label} • {row.overall_priority_score}
+                    {translateRiskLabel(row.overall_priority_label)} • {row.overall_priority_score}
                   </span>
                 </div>
 
                 <div className="record-body">
                   <div className="metric-grid">
                     <div className="metric-item">
-                      <span className="metric-label">Creatinine max</span>
-                      <strong>{row.creatinine_max ?? "N/A"}</strong>
+                      <span className="metric-label">Créatinine max</span>
+                      <strong>{row.creatinine_max ?? "N/D"}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Overall priority</span>
+                      <span className="metric-label">Priorité globale</span>
                       <strong>{row.overall_priority_score}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Medication count</span>
+                      <span className="metric-label">Nombre de médicaments</span>
                       <strong>{row.total_medication_count}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Flagged medications</span>
+                      <span className="metric-label">Médicaments signalés</span>
                       <strong>{row.flagged_medication_count}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Renal review</span>
-                      <strong>{row.renal_risk_flag ? "Flagged" : "No"}</strong>
+                      <span className="metric-label">Revue rénale</span>
+                      <strong>{row.renal_risk_flag ? "Signalé" : "Non"}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Length of stay</span>
-                      <strong>{row.length_of_stay_days.toFixed(1)} days</strong>
+                      <span className="metric-label">Durée de séjour</span>
+                      <strong>{row.length_of_stay_days.toFixed(1)} jours</strong>
                     </div>
                   </div>
 
                   <div className="metric-group admission-driver-block">
-                    <span className="metric-label">Overall priority drivers</span>
+                    <span className="metric-label">Facteurs principaux de priorité</span>
                     <strong>
                       {row.overall_priority_drivers.length > 0
-                        ? row.overall_priority_drivers.join(" • ")
-                        : "No major driver listed"}
+                        ? translateDriverList(row.overall_priority_drivers).join(" • ")
+                        : "Aucun facteur majeur affiché"}
                     </strong>
                   </div>
                 </div>
 
                 <div className="chip-row">
-                  {row.polypharmacy_flag ? <span className="chip chip-neutral">Polypharmacy</span> : null}
-                  {row.renal_risk_flag ? <span className="chip chip-neutral">Renal risk</span> : null}
+                  {row.polypharmacy_flag ? <span className="chip chip-neutral">Polypharmacie</span> : null}
+                  {row.renal_risk_flag ? <span className="chip chip-neutral">Risque rénal</span> : null}
                   {row.flagged_medication_count > 0 ? (
                     <span className="chip chip-neutral">
-                      {row.flagged_medication_count} flagged medication
-                      {row.flagged_medication_count === 1 ? "" : "s"}
+                      {row.flagged_medication_count} médicament
+                      {row.flagged_medication_count === 1 ? " signalé" : "s signalés"}
                     </span>
                   ) : null}
                 </div>

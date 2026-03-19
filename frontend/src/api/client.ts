@@ -1,7 +1,6 @@
 import type {
   AdmissionSummariesResponse,
   AdmissionDetailResponse,
-  RefreshScoresResponse,
   ScoredOutputSummary,
 } from "../types";
 
@@ -43,10 +42,4 @@ export function getAdmissionDetail(params: {
 
 export function getLatestScoredOutput(): Promise<ScoredOutputSummary> {
   return apiRequest<ScoredOutputSummary>("/scores/latest");
-}
-
-export function refreshScores(): Promise<RefreshScoresResponse> {
-  return apiRequest<RefreshScoresResponse>("/scores/refresh", {
-    method: "POST",
-  });
 }

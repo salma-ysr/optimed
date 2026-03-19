@@ -121,8 +121,3 @@ export interface ScoredOutputSummary {
   unique_admissions: number;
   last_modified: string;
 }
-
-export interface RefreshScoresResponse {
-  message: string;
-  output: ScoredOutputSummary;
-}
