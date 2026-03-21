@@ -15,7 +15,28 @@ const explanationMap: Record<string, string> = {
   "delirium diagnosis": "diagnostic de delirium",
   "heart failure diagnosis": "diagnostic d’insuffisance cardiaque",
   "diabetes diagnosis": "diagnostic de diabète",
+  "reduced renal reserve or renal vulnerability": "réserve rénale réduite ou vulnérabilité rénale",
+  "cognitive vulnerability from dementia or delirium context":
+    "vulnérabilité cognitive liée à la démence ou au delirium",
+  "cardiac or metabolic comorbidity may narrow medication tolerance":
+    "le terrain cardiaque ou métabolique peut réduire la tolérance médicamenteuse",
+  "advanced age or low reserve may reduce physiologic tolerance":
+    "l’âge avancé ou une faible réserve peuvent réduire la tolérance physiologique",
+  "creatinine is rising during the encounter": "la créatinine augmente pendant la rencontre",
+  "electrolyte abnormality may increase medication-related instability":
+    "une anomalie électrolytique peut accroître l’instabilité liée aux médicaments",
+  "blood pressure or heart-rate instability is present":
+    "une instabilité tensionnelle ou du rythme cardiaque est présente",
+  "high pain burden may complicate deprescribing prioritization":
+    "une douleur importante peut compliquer la priorisation de déprescription",
+  "no major structured IPD rule triggered": "aucune règle IPD structurée majeure déclenchée",
   "no major rule triggered": "aucune règle majeure déclenchée",
+};
+
+const bucketLabelMap: Record<string, string> = {
+  base_medication_risk: "Risque médicamenteux de base",
+  terrain_aggravating_context: "Terrain aggravant",
+  dynamic_biologic_vital_evidence: "Signaux biologiques et vitaux",
 };
 
 const medicationClassMap: Record<string, string> = {
@@ -51,4 +72,8 @@ export function translateDriverList(items: string[]): string[] {
 
 export function translateMedicationClass(label: string): string {
   return medicationClassMap[label] ?? label;
+}
+
+export function translateBucketLabel(label: string): string {
+  return bucketLabelMap[label] ?? label;
 }

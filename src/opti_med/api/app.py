@@ -15,6 +15,15 @@ from opti_med.api.schemas import (
     AdmissionSummary,
     HealthResponse,
     MedicationRowSummary,
+    PatientContextObject,
+    PatientDetailResponse,
+    PatientEncounterSummary,
+    PatientEncountersResponse,
+    PatientMedicationCard,
+    PatientMedicationsResponse,
+    PatientSummariesResponse,
+    PatientSummary,
+    ProblemFlash,
     RefreshScoresResponse,
     ScoredOutputSummary,
     ScoredRow,
@@ -102,6 +111,31 @@ def create_app() -> FastAPI:
             limit=limit,
             offset=offset,
             rows=[AdmissionSummary(**_clean_record(record)) for record in page.to_dict(orient="records")],
+        )
+
+    @app.get("/patients", response_model=PatientSummariesResponse)
+    def list_patients(
+        limit: int = Query(default=50, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        risk_label: str | None = Query(default=None, pattern="^(low|medium|high)$"),
+    ) -> PatientSummariesResponse:
+        dataframe = _load_scored_dataframe()
+        patient_summaries = _build_patient_summaries(dataframe)
+        if risk_label is not None:
+            patient_summaries = patient_summaries.loc[
+                patient_summaries["highest_priority_label"] == risk_label
+            ].copy()
+
+        patient_summaries = patient_summaries.sort_values(
+            ["highest_priority_score", "flagged_medication_count", "subject_id"],
+            ascending=[False, False, True],
+        ).reset_index(drop=True)
+        page = patient_summaries.iloc[offset : offset + limit]
+        return PatientSummariesResponse(
+            total_patients=len(patient_summaries),
+            limit=limit,
+            offset=offset,
+            rows=[PatientSummary(**_clean_record(record)) for record in page.to_dict(orient="records")],
         )
 
     @app.get("/scores/row", response_model=ScoredRow)
@@ -201,6 +235,52 @@ def create_app() -> FastAPI:
             medications=medications,
         )
 
+    @app.get("/patients/{subject_id}", response_model=PatientDetailResponse)
+    def get_patient_detail(subject_id: int) -> PatientDetailResponse:
+        dataframe = _load_scored_dataframe()
+        patient_rows = dataframe.loc[dataframe["subject_id"] == subject_id].copy()
+        if patient_rows.empty:
+            raise HTTPException(status_code=404, detail="No scored patient found for the provided subject_id.")
+
+        patient_summary = _build_patient_summary(patient_rows)
+        encounter_summaries = _build_patient_encounter_summaries(patient_rows)
+        medication_cards = _build_patient_medication_cards(patient_rows)
+        return PatientDetailResponse(
+            patient_summary=patient_summary,
+            encounter_summaries=encounter_summaries,
+            left_column_context=_build_patient_context_object(patient_rows),
+            ranked_medication_cards=medication_cards,
+            top_problem_flashes=_build_problem_flashes(patient_rows),
+            flagged_medication_count=patient_summary.flagged_medication_count,
+            medication_card_count=len(medication_cards),
+        )
+
+    @app.get("/patients/{subject_id}/medications", response_model=PatientMedicationsResponse)
+    def get_patient_medications(subject_id: int) -> PatientMedicationsResponse:
+        dataframe = _load_scored_dataframe()
+        patient_rows = dataframe.loc[dataframe["subject_id"] == subject_id].copy()
+        if patient_rows.empty:
+            raise HTTPException(status_code=404, detail="No scored patient found for the provided subject_id.")
+        cards = _build_patient_medication_cards(patient_rows)
+        return PatientMedicationsResponse(
+            subject_id=subject_id,
+            total_medications=len(cards),
+            rows=cards,
+        )
+
+    @app.get("/patients/{subject_id}/encounters", response_model=PatientEncountersResponse)
+    def get_patient_encounters(subject_id: int) -> PatientEncountersResponse:
+        dataframe = _load_scored_dataframe()
+        patient_rows = dataframe.loc[dataframe["subject_id"] == subject_id].copy()
+        if patient_rows.empty:
+            raise HTTPException(status_code=404, detail="No scored patient found for the provided subject_id.")
+        rows = _build_patient_encounter_summaries(patient_rows)
+        return PatientEncountersResponse(
+            subject_id=subject_id,
+            total_encounters=len(rows),
+            rows=rows,
+        )
+
     @app.get("/scores/latest", response_model=ScoredOutputSummary)
     def get_latest_scored_output() -> ScoredOutputSummary:
         repository = get_repository()
@@ -253,6 +333,8 @@ def _clean_record(record: dict) -> dict:
 
 
 def _normalize_value(value: object) -> object:
+    if isinstance(value, dict):
+        return value
     if isinstance(value, list):
         return value
     if isinstance(value, tuple):
@@ -305,10 +387,16 @@ def _build_admission_summaries(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 def _collect_explanations(dataframe: pd.DataFrame) -> list[str]:
     explanations: list[str] = []
-    for explanation_text in dataframe["deprescribing_priority_explanation"].dropna().tolist():
-        for item in [part.strip() for part in str(explanation_text).split(";") if part.strip()]:
-            if item not in explanations:
-                explanations.append(item)
+    if "deprescribing_priority_reasons_json" in dataframe.columns:
+        for reason_list in dataframe["deprescribing_priority_reasons_json"].dropna().tolist():
+            for item in reason_list:
+                if item not in explanations:
+                    explanations.append(str(item))
+    else:
+        for explanation_text in dataframe["deprescribing_priority_explanation"].dropna().tolist():
+            for item in [part.strip() for part in str(explanation_text).split(";") if part.strip()]:
+                if item not in explanations:
+                    explanations.append(item)
     return explanations[:4]
 
 
@@ -328,6 +416,10 @@ def _medication_classes_from_record(record: dict) -> list[str]:
 
 
 def _build_medication_summary(record: dict) -> MedicationRowSummary:
+    summary_alert = record.get("deprescribing_priority_summary_alert") or record.get(
+        "deprescribing_priority_explanation",
+        "",
+    )
     return MedicationRowSummary(
         drug=str(record["drug"]),
         medication_classes=_medication_classes_from_record(record),
@@ -335,13 +427,178 @@ def _build_medication_summary(record: dict) -> MedicationRowSummary:
         stoptime=record.get("stoptime"),
         deprescribing_priority_score=int(record["deprescribing_priority_score"]),
         deprescribing_priority_label=str(record["deprescribing_priority_label"]),
+        deprescribing_priority_summary_alert=str(summary_alert),
         deprescribing_priority_explanation=str(record["deprescribing_priority_explanation"]),
+        deprescribing_priority_bucket_scores_json=dict(
+            record.get("deprescribing_priority_bucket_scores_json") or {}
+        ),
+        deprescribing_priority_reasons_json=list(
+            record.get("deprescribing_priority_reasons_json") or []
+        ),
+        deprescribing_priority_evidence_json=dict(
+            record.get("deprescribing_priority_evidence_json") or {}
+        ),
         benzodiazepine_flag=int(record["benzodiazepine_flag"]),
         opioid_flag=int(record["opioid_flag"]),
         anticholinergic_flag=int(record["anticholinergic_flag"]),
         ppi_flag=int(record["ppi_flag"]),
         antipsychotic_flag=int(record["antipsychotic_flag"]),
     )
+
+
+def _build_patient_summaries(dataframe: pd.DataFrame) -> pd.DataFrame:
+    summaries = [_patient_summary_dict(group) for _, group in dataframe.groupby("subject_id", sort=False)]
+    return pd.DataFrame(summaries)
+
+
+def _build_patient_summary(patient_rows: pd.DataFrame) -> PatientSummary:
+    return PatientSummary(**_clean_record(_patient_summary_dict(patient_rows)))
+
+
+def _patient_summary_dict(patient_rows: pd.DataFrame) -> dict:
+    sorted_rows = patient_rows.sort_values(
+        ["deprescribing_priority_score", "hadm_id", "drug", "starttime"],
+        ascending=[False, True, True, True],
+    ).reset_index(drop=True)
+    top_row = sorted_rows.iloc[0].to_dict()
+    flagged_count = int(
+        patient_rows["deprescribing_priority_label"].isin(["medium", "high"]).sum()
+    )
+    return {
+        "subject_id": int(top_row["subject_id"]),
+        "sex": str(top_row["sex"]),
+        "age_proxy": int(top_row["age_proxy"]),
+        "age_group": str(top_row["age_group"]),
+        "encounter_count": int(patient_rows["hadm_id"].nunique()),
+        "medication_count": len(patient_rows),
+        "flagged_medication_count": flagged_count,
+        "highest_priority_score": int(top_row["deprescribing_priority_score"]),
+        "highest_priority_label": str(top_row["deprescribing_priority_label"]),
+        "top_problem_flashes": [flash.label for flash in _build_problem_flashes(patient_rows)],
+    }
+
+
+def _build_patient_encounter_summaries(patient_rows: pd.DataFrame) -> list[PatientEncounterSummary]:
+    summaries = _build_admission_summaries(patient_rows)
+    summaries = summaries.sort_values(
+        ["overall_priority_score", "flagged_medication_count", "admittime"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+    return [
+        PatientEncounterSummary(**_clean_record(record))
+        for record in summaries.to_dict(orient="records")
+    ]
+
+
+def _build_patient_context_object(patient_rows: pd.DataFrame) -> PatientContextObject:
+    sorted_rows = patient_rows.sort_values(["dischtime", "admittime"], ascending=[False, False]).reset_index(drop=True)
+    latest_row = sorted_rows.iloc[0].to_dict()
+    return PatientContextObject(
+        sex=str(latest_row["sex"]),
+        age_proxy=int(latest_row["age_proxy"]),
+        age_group=str(latest_row["age_group"]),
+        encounter_count=int(patient_rows["hadm_id"].nunique()),
+        medication_count=len(patient_rows),
+        flagged_medication_count=int(
+            patient_rows["deprescribing_priority_label"].isin(["medium", "high"]).sum()
+        ),
+        polypharmacy_present=bool(patient_rows["polypharmacy_flag"].max()),
+        renal_risk_present=bool(patient_rows["renal_risk_flag"].max()),
+        ckd_present=bool(patient_rows["ckd_flag"].max()),
+        dementia_present=bool(patient_rows["dementia_flag"].max()),
+        delirium_present=bool(patient_rows["delirium_flag"].max()),
+        heart_failure_present=bool(patient_rows["heart_failure_flag"].max()),
+        diabetes_present=bool(patient_rows["diabetes_flag"].max()),
+        latest_creatinine_max=latest_row.get("creatinine_max"),
+        latest_egfr_ml_min_1_73m2=latest_row.get("egfr_ml_min_1_73m2"),
+        latest_weight_kg=latest_row.get("weight_kg"),
+        latest_bmi=latest_row.get("bmi"),
+    )
+
+
+def _build_patient_medication_cards(patient_rows: pd.DataFrame) -> list[PatientMedicationCard]:
+    ranked_rows = patient_rows.sort_values(
+        ["deprescribing_priority_score", "hadm_id", "drug", "starttime"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+    return [
+        PatientMedicationCard(
+            subject_id=int(record["subject_id"]),
+            hadm_id=int(record["hadm_id"]),
+            admission_type=str(record["admission_type"]),
+            admittime=str(record["admittime"]),
+            dischtime=str(record["dischtime"]),
+            length_of_stay_days=float(record["length_of_stay_days"]),
+            drug=str(record["drug"]),
+            medication_classes=_medication_classes_from_record(record),
+            starttime=str(record["starttime"]),
+            stoptime=record.get("stoptime"),
+            deprescribing_priority_score=int(record["deprescribing_priority_score"]),
+            deprescribing_priority_label=str(record["deprescribing_priority_label"]),
+            deprescribing_priority_summary_alert=str(
+                record.get("deprescribing_priority_summary_alert")
+                or record.get("deprescribing_priority_explanation", "")
+            ),
+            deprescribing_priority_explanation=str(record["deprescribing_priority_explanation"]),
+            deprescribing_priority_bucket_scores_json=dict(
+                record.get("deprescribing_priority_bucket_scores_json") or {}
+            ),
+            deprescribing_priority_reasons_json=list(
+                record.get("deprescribing_priority_reasons_json")
+                or _fallback_reasons(record.get("deprescribing_priority_explanation"))
+            ),
+            deprescribing_priority_evidence_json=dict(
+                record.get("deprescribing_priority_evidence_json") or {}
+            ),
+            benzodiazepine_flag=int(record["benzodiazepine_flag"]),
+            opioid_flag=int(record["opioid_flag"]),
+            anticholinergic_flag=int(record["anticholinergic_flag"]),
+            ppi_flag=int(record["ppi_flag"]),
+            antipsychotic_flag=int(record["antipsychotic_flag"]),
+        )
+        for record in ranked_rows.to_dict(orient="records")
+    ]
+
+
+def _fallback_reasons(explanation_text: object) -> list[str]:
+    if explanation_text is None:
+        return []
+    return [part.strip() for part in str(explanation_text).split(";") if part.strip()]
+
+
+def _build_problem_flashes(patient_rows: pd.DataFrame) -> list[ProblemFlash]:
+    flashes: list[ProblemFlash] = []
+    if bool(patient_rows["renal_risk_flag"].max()) or (
+        "creatinine_trend_direction" in patient_rows.columns
+        and (patient_rows["creatinine_trend_direction"] == "rising").any()
+    ):
+        flashes.append(
+            ProblemFlash(
+                key="renal_toxicity",
+                label="Renal toxicity",
+                severity="high" if bool(patient_rows["renal_risk_flag"].max()) else "medium",
+                reason="Rising creatinine or renal vulnerability is present.",
+            )
+        )
+    if bool(patient_rows["opioid_flag"].max()) or bool(patient_rows["benzodiazepine_flag"].max()):
+        flashes.append(
+            ProblemFlash(
+                key="oversedation",
+                label="Oversedation",
+                severity="high" if bool(patient_rows["benzodiazepine_flag"].max()) else "medium",
+                reason="Sedating medication exposure is present.",
+            )
+        )
+    if bool(patient_rows["benzodiazepine_flag"].max()) or bool(patient_rows["anticholinergic_flag"].max()):
+        flashes.append(
+            ProblemFlash(
+                key="fall_risk",
+                label="Fall risk",
+                severity="medium",
+                reason="Fall-prone medication exposure is present.",
+            )
+        )
+    return flashes[:3]
 
 
 app = create_app()

@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { getAdmissionDetail } from "../api/client";
 import type { AdmissionDetailResponse, MedicationRowSummary, RiskLabel } from "../types";
 import {
+  translateBucketLabel,
   translateDriverList,
   translateExplanation,
   translateMedicationClass,
@@ -21,6 +22,13 @@ function riskTone(label: RiskLabel) {
 
 function medicationClassBadges(medication: MedicationRowSummary) {
   return medication.medication_classes.map(translateMedicationClass);
+}
+
+function bucketBreakdownText(medication: MedicationRowSummary) {
+  return Object.entries(medication.deprescribing_priority_bucket_scores_json)
+    .filter(([, value]) => value > 0)
+    .map(([bucket, value]) => `${translateBucketLabel(bucket)}: ${value}`)
+    .join(" • ");
 }
 
 export function RecordDetailsPage() {
@@ -122,8 +130,14 @@ export function RecordDetailsPage() {
                         </span>
                       </div>
                       <p className="medication-explanation">
+                        {medication.deprescribing_priority_summary_alert}
+                      </p>
+                      <p className="medication-explanation">
                         {translateExplanation(medication.deprescribing_priority_explanation)}
                       </p>
+                      {bucketBreakdownText(medication) ? (
+                        <p className="record-subtitle">{bucketBreakdownText(medication)}</p>
+                      ) : null}
                       <div className="chip-row">
                         {medicationClassBadges(medication).map((label) => (
                           <span key={label} className="chip chip-neutral">
@@ -229,8 +243,14 @@ export function RecordDetailsPage() {
                         </span>
                       </div>
                       <p className="medication-explanation">
+                        {medication.deprescribing_priority_summary_alert}
+                      </p>
+                      <p className="medication-explanation">
                         {translateExplanation(medication.deprescribing_priority_explanation)}
                       </p>
+                      {bucketBreakdownText(medication) ? (
+                        <p className="record-subtitle">{bucketBreakdownText(medication)}</p>
+                      ) : null}
                       <div className="chip-row">
                         {medicationClassBadges(medication).map((label) => (
                           <span key={label} className="chip chip-neutral">

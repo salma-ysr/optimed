@@ -31,7 +31,11 @@ export interface ScoredRow {
   renal_risk_flag: number;
   deprescribing_priority_score: number;
   deprescribing_priority_label: RiskLabel;
+  deprescribing_priority_summary_alert: string;
   deprescribing_priority_explanation: string;
+  deprescribing_priority_bucket_scores_json: Record<string, number>;
+  deprescribing_priority_reasons_json: string[];
+  deprescribing_priority_evidence_json: Record<string, unknown>;
 }
 
 export interface ScoredRowsResponse {
@@ -75,7 +79,11 @@ export interface MedicationRowSummary {
   stoptime: string | null;
   deprescribing_priority_score: number;
   deprescribing_priority_label: RiskLabel;
+  deprescribing_priority_summary_alert: string;
   deprescribing_priority_explanation: string;
+  deprescribing_priority_bucket_scores_json: Record<string, number>;
+  deprescribing_priority_reasons_json: string[];
+  deprescribing_priority_evidence_json: Record<string, unknown>;
   benzodiazepine_flag: number;
   opioid_flag: number;
   anticholinergic_flag: number;

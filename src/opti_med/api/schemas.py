@@ -48,7 +48,11 @@ class ScoredRow(BaseModel):
     renal_risk_flag: int
     deprescribing_priority_score: int
     deprescribing_priority_label: str
+    deprescribing_priority_summary_alert: str
     deprescribing_priority_explanation: str
+    deprescribing_priority_bucket_scores_json: dict[str, int]
+    deprescribing_priority_reasons_json: list[str]
+    deprescribing_priority_evidence_json: dict[str, object]
 
 
 class ScoredRowsResponse(BaseModel):
@@ -100,7 +104,11 @@ class MedicationRowSummary(BaseModel):
     stoptime: str | None = None
     deprescribing_priority_score: int
     deprescribing_priority_label: str
+    deprescribing_priority_summary_alert: str
     deprescribing_priority_explanation: str
+    deprescribing_priority_bucket_scores_json: dict[str, int]
+    deprescribing_priority_reasons_json: list[str]
+    deprescribing_priority_evidence_json: dict[str, object]
     benzodiazepine_flag: int
     opioid_flag: int
     anticholinergic_flag: int
@@ -156,3 +164,129 @@ class RefreshScoresResponse(BaseModel):
 
     message: str
     output: ScoredOutputSummary
+
+
+class PatientSummary(BaseModel):
+    """Patient-level rollup for patient-centered list views."""
+
+    subject_id: int
+    sex: str
+    age_proxy: int
+    age_group: str
+    encounter_count: int
+    medication_count: int
+    flagged_medication_count: int
+    highest_priority_score: int
+    highest_priority_label: str
+    top_problem_flashes: list[str]
+
+
+class PatientSummariesResponse(BaseModel):
+    """Paginated patient summary response."""
+
+    total_patients: int
+    limit: int
+    offset: int
+    rows: list[PatientSummary]
+
+
+class PatientEncounterSummary(BaseModel):
+    """Encounter-level summary nested under a patient dossier."""
+
+    subject_id: int
+    hadm_id: int
+    admission_type: str
+    admittime: str
+    dischtime: str
+    length_of_stay_days: float
+    overall_priority_score: int
+    overall_priority_label: str
+    total_medication_count: int
+    flagged_medication_count: int
+    overall_priority_drivers: list[str]
+
+
+class PatientEncountersResponse(BaseModel):
+    """Patient encounter list response."""
+
+    subject_id: int
+    total_encounters: int
+    rows: list[PatientEncounterSummary]
+
+
+class PatientContextObject(BaseModel):
+    """Explicit left-column patient context object for future patient-first UI work."""
+
+    sex: str
+    age_proxy: int
+    age_group: str
+    encounter_count: int
+    medication_count: int
+    flagged_medication_count: int
+    polypharmacy_present: bool
+    renal_risk_present: bool
+    ckd_present: bool
+    dementia_present: bool
+    delirium_present: bool
+    heart_failure_present: bool
+    diabetes_present: bool
+    latest_creatinine_max: float | None = None
+    latest_egfr_ml_min_1_73m2: float | None = None
+    latest_weight_kg: float | None = None
+    latest_bmi: float | None = None
+
+
+class ProblemFlash(BaseModel):
+    """Short clinician-readable top problem flash for a patient dossier."""
+
+    key: str
+    label: str
+    severity: str
+    reason: str
+
+
+class PatientMedicationCard(BaseModel):
+    """Ranked patient-centered medication card."""
+
+    subject_id: int
+    hadm_id: int
+    admission_type: str
+    admittime: str
+    dischtime: str
+    length_of_stay_days: float
+    drug: str
+    medication_classes: list[str]
+    starttime: str
+    stoptime: str | None = None
+    deprescribing_priority_score: int
+    deprescribing_priority_label: str
+    deprescribing_priority_summary_alert: str
+    deprescribing_priority_explanation: str
+    deprescribing_priority_bucket_scores_json: dict[str, int]
+    deprescribing_priority_reasons_json: list[str]
+    deprescribing_priority_evidence_json: dict[str, object]
+    benzodiazepine_flag: int
+    opioid_flag: int
+    anticholinergic_flag: int
+    ppi_flag: int
+    antipsychotic_flag: int
+
+
+class PatientMedicationsResponse(BaseModel):
+    """Patient medication card list response."""
+
+    subject_id: int
+    total_medications: int
+    rows: list[PatientMedicationCard]
+
+
+class PatientDetailResponse(BaseModel):
+    """Patient-centered dossier response."""
+
+    patient_summary: PatientSummary
+    encounter_summaries: list[PatientEncounterSummary]
+    left_column_context: PatientContextObject
+    ranked_medication_cards: list[PatientMedicationCard]
+    top_problem_flashes: list[ProblemFlash]
+    flagged_medication_count: int
+    medication_card_count: int

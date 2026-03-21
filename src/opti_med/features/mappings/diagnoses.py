@@ -22,3 +22,10 @@ DIAGNOSIS_ICD_PREFIXES: dict[str, dict[int, tuple[str, ...]]] = {
         10: ("E08", "E09", "E10", "E11", "E13"),
     },
 }
+
+DIAGNOSIS_RISK_CATEGORY_GROUPS: dict[str, tuple[str, ...]] = {
+    "diagnosis_risk_renal_flag": ("ckd_flag",),
+    "diagnosis_risk_cognitive_flag": ("dementia_flag", "delirium_flag"),
+    "diagnosis_risk_cardiac_flag": ("heart_failure_flag",),
+    "diagnosis_risk_metabolic_flag": ("diabetes_flag",),
+}

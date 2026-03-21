@@ -9,6 +9,8 @@ import pandas as pd
 
 from opti_med.cohort.builder import OlderAdultMedicationCohortBuilder
 from opti_med.config import Settings
+from opti_med.data_access.loaders import MimicDualDemoLoader
+from opti_med.features.context import build_patient_context_features
 from opti_med.features.mappings.diagnoses import DIAGNOSIS_ICD_PREFIXES
 from opti_med.features.mappings.labs import serum_creatinine_itemids
 from opti_med.features.mappings.medications import HIGH_RISK_MEDICATION_KEYWORDS
@@ -29,20 +31,39 @@ class MinimalFeatureBuilder:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.cohort_builder = OlderAdultMedicationCohortBuilder(settings)
+        self.dual_loader = MimicDualDemoLoader(settings)
 
     def build(self) -> pd.DataFrame:
         """Build the processed cohort dataframe."""
         tables = self.cohort_builder.loader.load_all()
         cohort = self.cohort_builder.build_from_tables(tables)
-        diagnoses = tables["diagnoses_icd"].copy()
-        labevents = tables["labevents"].copy()
+        omr_loaded = self.cohort_builder.loader.load_optional_table("omr")
+        edstays = self.dual_loader.load_ed_table("edstays").dataframe
+        ed_diagnosis_loaded = self.dual_loader.load_optional_ed_table("diagnosis")
+        triage_loaded = self.dual_loader.load_optional_ed_table("triage")
+        vitalsign_loaded = self.dual_loader.load_optional_ed_table("vitalsign")
 
-        diagnosis_features = build_diagnosis_flags(diagnoses)
-        creatinine_features = build_creatinine_features(labevents, self.settings)
+        patient_context_features = build_patient_context_features(
+            admissions=tables["admissions"],
+            patients=tables["patients"],
+            diagnoses_icd=tables["diagnoses_icd"],
+            labevents=tables["labevents"],
+            omr=omr_loaded.dataframe if omr_loaded else None,
+            edstays=edstays,
+            ed_diagnosis=ed_diagnosis_loaded.dataframe if ed_diagnosis_loaded else None,
+            triage=triage_loaded.dataframe if triage_loaded else None,
+            vitalsign=vitalsign_loaded.dataframe if vitalsign_loaded else None,
+            creatinine_threshold=self.settings.renal_risk_creatinine_threshold,
+            serum_creatinine_ids=self.settings.serum_creatinine_itemids,
+        )
         medication_burden_features = build_medication_burden_features(cohort, self.settings)
 
-        enriched = cohort.merge(diagnosis_features, on="hadm_id", how="left", validate="many_to_one")
-        enriched = enriched.merge(creatinine_features, on="hadm_id", how="left", validate="many_to_one")
+        enriched = cohort.merge(
+            patient_context_features,
+            on=["subject_id", "hadm_id"],
+            how="left",
+            validate="many_to_one",
+        )
         enriched = enriched.merge(
             medication_burden_features, on="hadm_id", how="left", validate="many_to_one"
         )
@@ -152,6 +173,19 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "delirium_flag",
         "heart_failure_flag",
         "diabetes_flag",
+        "diagnosis_risk_renal_flag",
+        "diagnosis_risk_cognitive_flag",
+        "diagnosis_risk_cardiac_flag",
+        "diagnosis_risk_metabolic_flag",
+        "ed_ckd_flag",
+        "ed_dementia_flag",
+        "ed_delirium_flag",
+        "ed_heart_failure_flag",
+        "ed_diabetes_flag",
+        "ed_diagnosis_risk_renal_flag",
+        "ed_diagnosis_risk_cognitive_flag",
+        "ed_diagnosis_risk_cardiac_flag",
+        "ed_diagnosis_risk_metabolic_flag",
         "renal_risk_flag",
         "polypharmacy_flag",
         "benzodiazepine_flag",
@@ -162,11 +196,41 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     ]
     numeric_columns = [
         "creatinine_first",
+        "creatinine_last",
         "creatinine_max",
         "creatinine_mean",
+        "creatinine_delta",
+        "potassium_first",
+        "potassium_last",
+        "potassium_min",
+        "potassium_max",
+        "potassium_mean",
+        "potassium_delta",
+        "sodium_first",
+        "sodium_last",
+        "sodium_min",
+        "sodium_max",
+        "sodium_mean",
+        "sodium_delta",
         "total_medication_count",
+        "weight_kg",
+        "bmi",
+        "egfr_ml_min_1_73m2",
+        "cockcroft_gault_ml_min",
+        "sbp_min",
+        "sbp_max",
+        "sbp_mean",
+        "dbp_min",
+        "dbp_max",
+        "dbp_mean",
+        "heart_rate_min",
+        "heart_rate_max",
+        "heart_rate_mean",
+        "pain_min",
+        "pain_max",
+        "pain_mean",
     ]
-    ordered_columns = [
+    base_ordered_columns = [
         "subject_id",
         "hadm_id",
         "sex",
@@ -191,10 +255,77 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "delirium_flag",
         "heart_failure_flag",
         "diabetes_flag",
+        "diagnosis_risk_renal_flag",
+        "diagnosis_risk_cognitive_flag",
+        "diagnosis_risk_cardiac_flag",
+        "diagnosis_risk_metabolic_flag",
+        "ed_ckd_flag",
+        "ed_dementia_flag",
+        "ed_delirium_flag",
+        "ed_heart_failure_flag",
+        "ed_diabetes_flag",
+        "ed_diagnosis_risk_renal_flag",
+        "ed_diagnosis_risk_cognitive_flag",
+        "ed_diagnosis_risk_cardiac_flag",
+        "ed_diagnosis_risk_metabolic_flag",
+        "diagnosis_context_provenance",
+        "ed_diagnosis_context_provenance",
+        "age_provenance",
+        "sex_provenance",
+        "weight_kg",
+        "weight_kg_provenance",
+        "weight_kg_unavailable_reason",
+        "bmi",
+        "bmi_provenance",
+        "bmi_unavailable_reason",
         "creatinine_first",
+        "creatinine_last",
         "creatinine_max",
         "creatinine_mean",
+        "creatinine_delta",
+        "creatinine_trend_direction",
+        "creatinine_provenance",
         "renal_risk_flag",
+        "potassium_first",
+        "potassium_last",
+        "potassium_min",
+        "potassium_max",
+        "potassium_mean",
+        "potassium_delta",
+        "potassium_trend_direction",
+        "potassium_provenance",
+        "sodium_first",
+        "sodium_last",
+        "sodium_min",
+        "sodium_max",
+        "sodium_mean",
+        "sodium_delta",
+        "sodium_trend_direction",
+        "sodium_provenance",
+        "egfr_ml_min_1_73m2",
+        "egfr_provenance",
+        "egfr_unavailable_reason",
+        "cockcroft_gault_ml_min",
+        "cockcroft_gault_provenance",
+        "cockcroft_gault_unavailable_reason",
+        "sbp_min",
+        "sbp_max",
+        "sbp_mean",
+        "dbp_min",
+        "dbp_max",
+        "dbp_mean",
+        "blood_pressure_provenance",
+        "heart_rate_min",
+        "heart_rate_max",
+        "heart_rate_mean",
+        "heart_rate_provenance",
+        "pain_min",
+        "pain_max",
+        "pain_mean",
+        "pain_provenance",
+        "ed_triage_acuity",
+        "ed_chiefcomplaint",
+        "ed_triage_provenance",
     ]
 
     output = dataframe.copy()
@@ -202,7 +333,9 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         output[column] = output[column].fillna(0).astype(int)
     for column in numeric_columns:
         output[column] = pd.to_numeric(output[column], errors="coerce")
-    return output.loc[:, ordered_columns]
+    ordered_columns = [column for column in base_ordered_columns if column in output.columns]
+    remaining_columns = [column for column in output.columns if column not in ordered_columns]
+    return output.loc[:, [*ordered_columns, *remaining_columns]]
 
 
 def summarize_processed_cohort(dataframe: pd.DataFrame) -> list[str]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,13 @@ import pandas as pd
 
 from opti_med.api.schemas import ScoredOutputSummary
 from opti_med.config import Settings
+
+
+JSON_COLUMNS = {
+    "deprescribing_priority_bucket_scores_json",
+    "deprescribing_priority_reasons_json",
+    "deprescribing_priority_evidence_json",
+}
 
 
 @dataclass
@@ -46,6 +54,9 @@ class ScoredDataRepository:
             return self._cached_df.copy()
 
         dataframe = pd.read_csv(path)
+        for column in JSON_COLUMNS:
+            if column in dataframe.columns:
+                dataframe[column] = dataframe[column].map(_parse_json_cell)
         dataframe = dataframe.where(pd.notna(dataframe), None)
         self._cached_df = dataframe
         self._cached_mtime_ns = current_mtime_ns
@@ -64,3 +75,12 @@ class ScoredDataRepository:
             unique_admissions=int(dataframe["hadm_id"].nunique()),
             last_modified=last_modified,
         )
+
+
+def _parse_json_cell(value: object) -> object:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
