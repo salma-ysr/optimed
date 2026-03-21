@@ -15,14 +15,20 @@ src/opti_med/api/schemas.py
 src/opti_med/cli/__init__.py
 src/opti_med/cli/build_cohort.py
 src/opti_med/cli/build_features.py
+src/opti_med/cli/build_medication_events.py
+src/opti_med/cli/build_medication_snapshot.py
 src/opti_med/cli/build_scores.py
 src/opti_med/cli/load_core_tables.py
 src/opti_med/cohort/__init__.py
 src/opti_med/cohort/builder.py
 src/opti_med/cohort/exceptions.py
 src/opti_med/data_access/__init__.py
+src/opti_med/data_access/catalog.py
+src/opti_med/data_access/encounters.py
 src/opti_med/data_access/exceptions.py
 src/opti_med/data_access/loaders.py
+src/opti_med/data_access/medication_events.py
+src/opti_med/data_access/medication_snapshot.py
 src/opti_med/data_access/schemas.py
 src/opti_med/features/__init__.py
 src/opti_med/features/builder.py
@@ -33,3 +39,4 @@ src/opti_med/features/mappings/medications.py
 src/opti_med/scoring/__init__.py
 src/opti_med/scoring/rules.py
 src/opti_med/scoring/scorer.py
+tests/test_medication_snapshot.py

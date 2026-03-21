@@ -3,6 +3,8 @@
 
 # data
 data/external/
+data/interim/
+data/processed/
 
 # python cache
 src/opti_med/__pycache__/

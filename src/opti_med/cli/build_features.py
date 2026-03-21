@@ -55,7 +55,11 @@ def main() -> int:
     base_settings = Settings.from_env()
     settings = Settings(
         data_root=args.data_root or base_settings.data_root,
+        external_data_root=base_settings.external_data_root,
+        clinical_data_root=args.data_root or base_settings.clinical_data_root,
+        ed_data_root=base_settings.ed_data_root,
         hosp_dir_name=base_settings.hosp_dir_name,
+        ed_dir_name=base_settings.ed_dir_name,
         file_extension=args.file_extension or base_settings.file_extension,
         interim_root=base_settings.interim_root,
         processed_root=base_settings.processed_root,
@@ -76,7 +80,7 @@ def main() -> int:
         return 1
 
     print("Built processed older-adult medication cohort successfully.")
-    print(f"Data root: {settings.data_root}")
+    print(f"Clinical data root: {settings.clinical_data_root}")
     print(f"Output: {result.output_path}")
     if result.dropped_duplicate_rows:
         print(f"- dropped_duplicate_rows={result.dropped_duplicate_rows:,}")
