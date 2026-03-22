@@ -31,6 +31,8 @@ type ContextSectionProps = {
 
 type MedicationAlertCardProps = {
   medication: PatientMedicationCard;
+  expanded: boolean;
+  onToggle: () => void;
 };
 
 type DecisionSupportPanelProps = {
@@ -289,20 +291,26 @@ function evidenceValue(value: unknown) {
   return String(value);
 }
 
-function MedicationAlertCard({ medication }: MedicationAlertCardProps) {
+function medicationCardId(medication: PatientMedicationCard) {
+  return `${medication.hadm_id}-${medication.drug}-${medication.starttime}`;
+}
+
+function MedicationAlertCard({ medication, expanded, onToggle }: MedicationAlertCardProps) {
   const evidence = evidenceEntries(medication);
+  const classBadges = medicationClassBadges(medication);
+  const detailsId = `medication-details-${medicationCardId(medication)}`;
 
   return (
     <article className={medicationCardTone(medication.deprescribing_priority_label)}>
-      <header className="medication-alert-header">
+      <header className="medication-alert-header medication-alert-header-compact">
         <div className="medication-alert-title-block">
           <p className="medication-alert-name">{medication.drug}</p>
-          <p className="medication-alert-meta">{routeDoseFrequencyLine(medication)}</p>
-          <p className="record-subtitle">
-            Séjour {medication.hadm_id} • {medication.admission_type}
-            {medication.starttime ? ` • ${medication.starttime}` : ""}
-            {medication.stoptime ? ` à ${medication.stoptime}` : ""}
-          </p>
+          <div className="medication-alert-collapsed-meta">
+            <p className="medication-alert-meta">{routeDoseFrequencyLine(medication)}</p>
+            {classBadges.length > 0 ? (
+              <span className="chip chip-neutral">{classBadges[0]}</span>
+            ) : null}
+          </div>
         </div>
         <div className="medication-alert-score">
           <span className={scoreBadgeTone(medication.deprescribing_priority_label)}>
@@ -311,36 +319,57 @@ function MedicationAlertCard({ medication }: MedicationAlertCardProps) {
           <span className={riskTone(medication.deprescribing_priority_label)}>
             {translateRiskLabel(medication.deprescribing_priority_label)}
           </span>
+          <button
+            type="button"
+            className="medication-toggle"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+          >
+            {expanded ? "Réduire" : "Développer"}
+          </button>
         </div>
       </header>
 
-      <section className="medication-alert-section">
-        <p className="medication-alert-section-title">Alerte signal</p>
-        <p className="medication-alert-copy">{alertSignalText(medication)}</p>
-      </section>
+      {!expanded ? (
+        <p className="medication-alert-preview">{alertSignalText(medication)}</p>
+      ) : (
+        <div id={detailsId} className="medication-alert-details">
+          <p className="record-subtitle">
+            Séjour {medication.hadm_id} • {medication.admission_type}
+            {medication.starttime ? ` • ${medication.starttime}` : ""}
+            {medication.stoptime ? ` à ${medication.stoptime}` : ""}
+          </p>
 
-      <section className="medication-alert-section">
-        <p className="medication-alert-section-title">Parce que</p>
-        <p className="medication-alert-copy">{contextualReasonText(medication)}</p>
-      </section>
+          <section className="medication-alert-section">
+            <p className="medication-alert-section-title">Alerte signal</p>
+            <p className="medication-alert-copy">{alertSignalText(medication)}</p>
+          </section>
 
-      {evidence.length > 0 || bucketBreakdownText(medication) ? (
-        <section className="medication-alert-section">
-          <p className="medication-alert-section-title">Éléments contextuels</p>
-          <div className="medication-evidence-list">
-            {evidence.map(([key, value]) => (
-              <span key={key} className="medication-evidence-chip">
-                <strong>{evidenceLabel(key)}:</strong> {evidenceValue(value)}
-              </span>
-            ))}
-            {bucketBreakdownText(medication) ? (
-              <span className="medication-evidence-chip">
-                <strong>Score:</strong> {bucketBreakdownText(medication)}
-              </span>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
+          <section className="medication-alert-section">
+            <p className="medication-alert-section-title">Parce que</p>
+            <p className="medication-alert-copy">{contextualReasonText(medication)}</p>
+          </section>
+
+          {evidence.length > 0 || bucketBreakdownText(medication) ? (
+            <section className="medication-alert-section">
+              <p className="medication-alert-section-title">Éléments contextuels</p>
+              <div className="medication-evidence-list">
+                {evidence.map(([key, value]) => (
+                  <span key={key} className="medication-evidence-chip">
+                    <strong>{evidenceLabel(key)}:</strong> {evidenceValue(value)}
+                  </span>
+                ))}
+                {bucketBreakdownText(medication) ? (
+                  <span className="medication-evidence-chip">
+                    <strong>Score:</strong> {bucketBreakdownText(medication)}
+                  </span>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      )}
     </article>
   );
 }
@@ -383,6 +412,7 @@ export function RecordDetailsPage() {
   const { subjectId = "" } = useParams();
 
   const [record, setRecord] = useState<PatientDetailResponse | null>(null);
+  const [expandedMedicationIds, setExpandedMedicationIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -393,6 +423,7 @@ export function RecordDetailsPage() {
       try {
         const nextRecord = await getPatientDetail(subjectId);
         setRecord(nextRecord);
+        setExpandedMedicationIds([]);
       } catch (caughtError) {
         const detail =
           caughtError instanceof Error && caughtError.message
@@ -406,6 +437,25 @@ export function RecordDetailsPage() {
 
     void loadRecord();
   }, [subjectId]);
+
+  function toggleMedication(cardId: string) {
+    setExpandedMedicationIds((current) =>
+      current.includes(cardId)
+        ? current.filter((item) => item !== cardId)
+        : [...current, cardId],
+    );
+  }
+
+  function expandAllMedications() {
+    if (!record) {
+      return;
+    }
+    setExpandedMedicationIds(record.ranked_medication_cards.map(medicationCardId));
+  }
+
+  function collapseAllMedications() {
+    setExpandedMedicationIds([]);
+  }
 
   return (
     <main className="page-shell">
@@ -603,15 +653,29 @@ export function RecordDetailsPage() {
 
               <section className="details-column details-column-center">
                 <section className="details-card details-card-emphasis">
-                  <h2>Cartes médicamenteuses Opti-Med</h2>
-                  <p className="details-section-copy">
-                    Workflow principal de revue pharmaco-clinique, classé par IPD décroissant.
-                  </p>
+                  <div className="medication-list-header">
+                    <div>
+                      <h2>Cartes médicamenteuses Opti-Med</h2>
+                      <p className="details-section-copy">
+                        Workflow principal de revue pharmaco-clinique, classé par IPD décroissant.
+                      </p>
+                    </div>
+                    <div className="medication-list-controls">
+                      <button type="button" className="list-control-button" onClick={expandAllMedications}>
+                        Tout développer
+                      </button>
+                      <button type="button" className="list-control-button" onClick={collapseAllMedications}>
+                        Tout réduire
+                      </button>
+                    </div>
+                  </div>
                   <div className="medications-list medications-list-priority">
                     {record.ranked_medication_cards.map((medication) => (
                       <MedicationAlertCard
-                        key={`${medication.hadm_id}-${medication.drug}-${medication.starttime}`}
+                        key={medicationCardId(medication)}
                         medication={medication}
+                        expanded={expandedMedicationIds.includes(medicationCardId(medication))}
+                        onToggle={() => toggleMedication(medicationCardId(medication))}
                       />
                     ))}
                   </div>
