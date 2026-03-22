@@ -27,6 +27,7 @@ src/opti_med/data_access/catalog.py
 src/opti_med/data_access/encounters.py
 src/opti_med/data_access/exceptions.py
 src/opti_med/data_access/loaders.py
+src/opti_med/data_access/medication_consolidation.py
 src/opti_med/data_access/medication_events.py
 src/opti_med/data_access/medication_snapshot.py
 src/opti_med/data_access/schemas.py
@@ -40,6 +41,7 @@ src/opti_med/features/mappings/medications.py
 src/opti_med/scoring/__init__.py
 src/opti_med/scoring/rules.py
 src/opti_med/scoring/scorer.py
+tests/test_medication_consolidation.py
 tests/test_medication_snapshot.py
 tests/test_patient_context.py
 tests/test_scoring.py

@@ -17,6 +17,7 @@ JSON_COLUMNS = {
     "deprescribing_priority_bucket_scores_json",
     "deprescribing_priority_reasons_json",
     "deprescribing_priority_evidence_json",
+    "prescription_segments_json",
 }
 
 

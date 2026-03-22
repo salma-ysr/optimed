@@ -144,16 +144,68 @@ def build_creatinine_features(labevents: pd.DataFrame, settings: Settings) -> pd
 
 
 def build_medication_burden_features(cohort: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """Aggregate medication burden to the admission level."""
+    """Aggregate medication burden from canonical medication episodes.
+
+    ``total_medication_count`` counts collapsed episode rows per admission.
+    ``peak_concurrent_medication_count`` counts how many canonical episodes overlap in time,
+    which is the value used to decide the polypharmacy flag.
+    """
+    if cohort.empty:
+        return pd.DataFrame(
+            columns=[
+                "hadm_id",
+                "total_medication_count",
+                "peak_concurrent_medication_count",
+                "polypharmacy_flag",
+            ]
+        )
+
     burden = (
-        cohort.assign(drug_normalized=cohort["drug"].astype(str).str.strip().str.lower())
-        .groupby("hadm_id", as_index=False)
-        .agg(total_medication_count=("drug_normalized", "nunique"))
+        cohort.groupby("hadm_id", as_index=False)
+        .agg(total_medication_count=("medication_episode_id", "nunique"))
     )
+    grouped_intervals = cohort.loc[:, ["hadm_id", "starttime", "stoptime", "dischtime"]].groupby(
+        "hadm_id",
+        sort=False,
+    )
+    try:
+        concurrent_counts = (
+            grouped_intervals.apply(_peak_concurrent_medication_count, include_groups=False)
+            .rename("peak_concurrent_medication_count")
+            .reset_index()
+        )
+    except TypeError:
+        concurrent_counts = (
+            grouped_intervals.apply(_peak_concurrent_medication_count)
+            .rename("peak_concurrent_medication_count")
+            .reset_index()
+        )
+    burden = burden.merge(concurrent_counts, on="hadm_id", how="left", validate="one_to_one")
     burden["polypharmacy_flag"] = (
-        burden["total_medication_count"] >= settings.polypharmacy_threshold
+        burden["peak_concurrent_medication_count"] >= settings.polypharmacy_threshold
     ).astype(int)
     return burden
+
+
+def _peak_concurrent_medication_count(group: pd.DataFrame) -> int:
+    events: list[tuple[pd.Timestamp, int, int]] = []
+    for record in group.to_dict(orient="records"):
+        start = pd.to_datetime(record.get("starttime"), errors="coerce")
+        stop = pd.to_datetime(record.get("stoptime"), errors="coerce")
+        discharge = pd.to_datetime(record.get("dischtime"), errors="coerce")
+        if pd.isna(start):
+            continue
+        if pd.isna(stop):
+            stop = discharge if pd.notna(discharge) else start
+        events.append((start, 0, 1))
+        events.append((stop, 1, -1))
+
+    concurrent = 0
+    peak = 0
+    for _, _, delta in sorted(events):
+        concurrent += delta
+        peak = max(peak, concurrent)
+    return peak
 
 
 def add_high_risk_medication_flags(cohort: pd.DataFrame) -> pd.DataFrame:
@@ -213,6 +265,7 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "sodium_mean",
         "sodium_delta",
         "total_medication_count",
+        "peak_concurrent_medication_count",
         "weight_kg",
         "bmi",
         "egfr_ml_min_1_73m2",
@@ -241,9 +294,14 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "dischtime",
         "length_of_stay_days",
         "drug",
+        "drug_normalized",
         "starttime",
         "stoptime",
+        "medication_episode_id",
+        "prescription_segment_count",
+        "prescription_segments_json",
         "total_medication_count",
+        "peak_concurrent_medication_count",
         "polypharmacy_flag",
         "benzodiazepine_flag",
         "opioid_flag",

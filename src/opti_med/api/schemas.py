@@ -28,9 +28,14 @@ class ScoredRow(BaseModel):
     dischtime: str
     length_of_stay_days: float
     drug: str
+    drug_normalized: str | None = None
     starttime: str
     stoptime: str | None = None
+    medication_episode_id: str | None = None
+    prescription_segment_count: int | None = None
+    prescription_segments_json: list[dict[str, object]] | None = None
     total_medication_count: int
+    peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
     benzodiazepine_flag: int
     opioid_flag: int
@@ -77,6 +82,7 @@ class AdmissionSummary(BaseModel):
     dischtime: str
     length_of_stay_days: float
     total_medication_count: int
+    peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
     creatinine_max: float | None = None
     renal_risk_flag: int
@@ -99,9 +105,13 @@ class MedicationRowSummary(BaseModel):
     """Medication-level summary used on the admission details page."""
 
     drug: str
+    drug_normalized: str | None = None
     medication_classes: list[str]
     starttime: str
     stoptime: str | None = None
+    medication_episode_id: str | None = None
+    prescription_segment_count: int | None = None
+    prescription_segments_json: list[dict[str, object]] | None = None
     deprescribing_priority_score: int
     deprescribing_priority_label: str
     deprescribing_priority_summary_alert: str
@@ -129,6 +139,7 @@ class AdmissionDetailResponse(BaseModel):
     dischtime: str
     length_of_stay_days: float
     total_medication_count: int
+    peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
     ckd_flag: int
     dementia_flag: int
@@ -202,6 +213,7 @@ class PatientEncounterSummary(BaseModel):
     overall_priority_score: int
     overall_priority_label: str
     total_medication_count: int
+    peak_concurrent_medication_count: int | None = None
     flagged_medication_count: int
     overall_priority_drivers: list[str]
 
@@ -222,6 +234,7 @@ class PatientContextObject(BaseModel):
     age_group: str
     encounter_count: int
     medication_count: int
+    peak_concurrent_medication_count: int | None = None
     flagged_medication_count: int
     polypharmacy_present: bool
     renal_risk_present: bool
@@ -255,9 +268,13 @@ class PatientMedicationCard(BaseModel):
     dischtime: str
     length_of_stay_days: float
     drug: str
+    drug_normalized: str | None = None
     medication_classes: list[str]
     starttime: str
     stoptime: str | None = None
+    medication_episode_id: str | None = None
+    prescription_segment_count: int | None = None
+    prescription_segments_json: list[dict[str, object]] | None = None
     deprescribing_priority_score: int
     deprescribing_priority_label: str
     deprescribing_priority_summary_alert: str

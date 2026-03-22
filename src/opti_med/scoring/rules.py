@@ -139,7 +139,11 @@ BUCKETED_SCORING_RULES: tuple[BucketedScoringRule, ...] = (
         predicate=lambda row: int(row.get("polypharmacy_flag", 0)) == 1,
         clinician_reason="polypharmacy during admission",
         alert_fragment="polypharmacy",
-        evidence_builder=_evidence("total_medication_count", "polypharmacy_flag"),
+        evidence_builder=_evidence(
+            "total_medication_count",
+            "peak_concurrent_medication_count",
+            "polypharmacy_flag",
+        ),
     ),
     BucketedScoringRule(
         name="renal_terrain",

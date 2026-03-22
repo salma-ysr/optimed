@@ -216,6 +216,7 @@ def create_app() -> FastAPI:
             dischtime=str(top_row["dischtime"]),
             length_of_stay_days=float(top_row["length_of_stay_days"]),
             total_medication_count=int(top_row["total_medication_count"]),
+            peak_concurrent_medication_count=int(top_row.get("peak_concurrent_medication_count") or 0),
             polypharmacy_flag=int(top_row["polypharmacy_flag"]),
             ckd_flag=int(top_row["ckd_flag"]),
             dementia_flag=int(top_row["dementia_flag"]),
@@ -368,6 +369,7 @@ def _build_admission_summaries(dataframe: pd.DataFrame) -> pd.DataFrame:
                 "dischtime": str(top_row["dischtime"]),
                 "length_of_stay_days": float(top_row["length_of_stay_days"]),
                 "total_medication_count": int(top_row["total_medication_count"]),
+                "peak_concurrent_medication_count": int(top_row.get("peak_concurrent_medication_count") or 0),
                 "polypharmacy_flag": int(top_row["polypharmacy_flag"]),
                 "creatinine_max": top_row.get("creatinine_max"),
                 "renal_risk_flag": int(top_row["renal_risk_flag"]),
@@ -422,9 +424,13 @@ def _build_medication_summary(record: dict) -> MedicationRowSummary:
     )
     return MedicationRowSummary(
         drug=str(record["drug"]),
+        drug_normalized=record.get("drug_normalized"),
         medication_classes=_medication_classes_from_record(record),
         starttime=str(record["starttime"]),
         stoptime=record.get("stoptime"),
+        medication_episode_id=record.get("medication_episode_id"),
+        prescription_segment_count=record.get("prescription_segment_count"),
+        prescription_segments_json=list(record.get("prescription_segments_json") or []),
         deprescribing_priority_score=int(record["deprescribing_priority_score"]),
         deprescribing_priority_label=str(record["deprescribing_priority_label"]),
         deprescribing_priority_summary_alert=str(summary_alert),
@@ -499,6 +505,11 @@ def _build_patient_context_object(patient_rows: pd.DataFrame) -> PatientContextO
         age_group=str(latest_row["age_group"]),
         encounter_count=int(patient_rows["hadm_id"].nunique()),
         medication_count=len(patient_rows),
+        peak_concurrent_medication_count=int(
+            patient_rows["peak_concurrent_medication_count"].max()
+        )
+        if "peak_concurrent_medication_count" in patient_rows.columns
+        else None,
         flagged_medication_count=int(
             patient_rows["deprescribing_priority_label"].isin(["medium", "high"]).sum()
         ),
@@ -530,9 +541,13 @@ def _build_patient_medication_cards(patient_rows: pd.DataFrame) -> list[PatientM
             dischtime=str(record["dischtime"]),
             length_of_stay_days=float(record["length_of_stay_days"]),
             drug=str(record["drug"]),
+            drug_normalized=record.get("drug_normalized"),
             medication_classes=_medication_classes_from_record(record),
             starttime=str(record["starttime"]),
             stoptime=record.get("stoptime"),
+            medication_episode_id=record.get("medication_episode_id"),
+            prescription_segment_count=record.get("prescription_segment_count"),
+            prescription_segments_json=list(record.get("prescription_segments_json") or []),
             deprescribing_priority_score=int(record["deprescribing_priority_score"]),
             deprescribing_priority_label=str(record["deprescribing_priority_label"]),
             deprescribing_priority_summary_alert=str(

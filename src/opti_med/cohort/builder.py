@@ -9,6 +9,10 @@ import pandas as pd
 
 from opti_med.cohort.exceptions import CohortBuildError
 from opti_med.config import Settings
+from opti_med.data_access.medication_consolidation import (
+    collapse_continuation_intervals,
+    normalize_medication_name,
+)
 from opti_med.data_access.loaders import MimicCoreLoader
 
 
@@ -23,8 +27,12 @@ COHORT_COLUMNS = [
     "dischtime",
     "length_of_stay_days",
     "drug",
+    "drug_normalized",
     "starttime",
     "stoptime",
+    "medication_episode_id",
+    "prescription_segment_count",
+    "prescription_segments_json",
 ]
 
 
@@ -128,10 +136,13 @@ class OlderAdultMedicationCohortBuilder:
         prescriptions_frame["stoptime"] = pd.to_datetime(
             prescriptions_frame["stoptime"], errors="coerce"
         )
+        prescriptions_frame["drug_normalized"] = prescriptions_frame["drug"].map(
+            normalize_medication_name
+        )
 
-        if prescriptions_frame[["subject_id", "hadm_id", "drug"]].isna().any().any():
+        if prescriptions_frame[["subject_id", "hadm_id", "drug", "drug_normalized"]].isna().any().any():
             raise CohortBuildError(
-                "Prescriptions contain null subject_id, hadm_id, or drug values required for cohort output."
+                "Prescriptions contain null subject_id, hadm_id, or canonical drug values required for cohort output."
             )
 
         cohort = prescriptions_frame.merge(
@@ -140,13 +151,20 @@ class OlderAdultMedicationCohortBuilder:
             on=["subject_id", "hadm_id"],
             validate="many_to_one",
         )
-        return cohort
+        return collapse_continuation_intervals(
+            cohort,
+            group_columns=["subject_id", "hadm_id", "drug_normalized"],
+            start_column="starttime",
+            stop_column="stoptime",
+            segment_fields=["drug", "starttime", "stoptime"],
+            episode_id_prefix="cohort-episode",
+        )
 
     @staticmethod
     def _format_output_columns(cohort: pd.DataFrame) -> pd.DataFrame:
         formatted = cohort.loc[:, COHORT_COLUMNS].copy()
-        for column in ["admittime", "dischtime", "starttime", "stoptime"]:
-            formatted[column] = formatted[column].dt.strftime("%Y-%m-%d %H:%M:%S")
+        for column in ["admittime", "dischtime"]:
+            formatted[column] = pd.to_datetime(formatted[column], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
         formatted["length_of_stay_days"] = formatted["length_of_stay_days"].round(3)
         return formatted
 
@@ -198,7 +216,7 @@ class OlderAdultMedicationCohortBuilder:
 
     @staticmethod
     def _output_deduplication_columns() -> list[str]:
-        return ["subject_id", "hadm_id", "drug", "starttime", "stoptime"]
+        return ["subject_id", "hadm_id", "medication_episode_id"]
 
 
 def summarize_cohort(cohort: pd.DataFrame) -> list[str]:

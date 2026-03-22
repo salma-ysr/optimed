@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,10 @@ from pathlib import Path
 import pandas as pd
 
 from opti_med.config import Settings
+from opti_med.data_access.medication_consolidation import (
+    collapse_continuation_intervals,
+    normalize_medication_name,
+)
 from opti_med.data_access.encounters import EncounterIndexBuilder
 from opti_med.data_access.loaders import MimicDualDemoLoader
 
@@ -46,30 +49,10 @@ MEDICATION_EVENT_COLUMNS = [
     "pharmacy_enriched_flag",
     "continued_from_home_inferred",
     "newly_started_during_encounter_inferred",
+    "medication_episode_id",
+    "prescription_segment_count",
+    "prescription_segments_json",
 ]
-
-
-NORMALIZATION_STOPWORDS = {
-    "dr",
-    "er",
-    "xr",
-    "sr",
-    "cr",
-    "ec",
-    "ir",
-    "mg",
-    "mcg",
-    "g",
-    "ml",
-    "tablet",
-    "tablets",
-    "tab",
-    "tabs",
-    "capsule",
-    "capsules",
-    "cap",
-    "caps",
-}
 
 
 @dataclass(frozen=True)
@@ -118,6 +101,28 @@ class CanonicalMedicationEventBuilder:
             hospital_order_events,
             pharmacy_loaded.dataframe if pharmacy_loaded else None,
         )
+        hospital_order_events = collapse_continuation_intervals(
+            hospital_order_events,
+            group_columns=["subject_id", "encounter_id", "medication_normalized"],
+            start_column="starttime",
+            stop_column="stoptime",
+            segment_fields=[
+                "medication_event_id",
+                "raw_medication_name",
+                "medication_name",
+                "starttime",
+                "stoptime",
+                "route",
+                "frequency",
+                "dose_value",
+                "dose_unit",
+                "status",
+                "pharmacy_id",
+                "poe_id",
+                "pharmacy_enriched_flag",
+            ],
+            episode_id_prefix="event-episode",
+        ).reindex(columns=MEDICATION_EVENT_COLUMNS)
         hospital_admin_events = extract_hospital_admin_events(
             emar=emar_loaded.dataframe if emar_loaded else None,
             emar_detail=emar_detail_loaded.dataframe if emar_detail_loaded else None,
@@ -175,21 +180,6 @@ class CanonicalMedicationEventBuilder:
         return MedicationEventsBuildResult(dataframe=dataframe, output_path=target_path)
 
 
-def normalize_medication_name(raw_value: object) -> str | None:
-    """Normalize raw medication strings into a stable lower-case matching key."""
-    if raw_value is None or pd.isna(raw_value):
-        return None
-    text = str(raw_value).strip().lower()
-    if not text or text in {"0", "nan", "none", "___"}:
-        return None
-    text = text.lstrip("*")
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    tokens = [token for token in text.split() if token and token not in NORMALIZATION_STOPWORDS]
-    if not tokens:
-        return None
-    return " ".join(tokens)
-
-
 def extract_home_medications(
     medrecon: pd.DataFrame | None,
     *,
@@ -240,6 +230,9 @@ def extract_home_medications(
             pharmacy_enriched_flag=0,
             continued_from_home_inferred=0,
             newly_started_during_encounter_inferred=0,
+            medication_episode_id=pd.NA,
+            prescription_segment_count=1,
+            prescription_segments_json=pd.NA,
         )
     )
 
@@ -294,6 +287,9 @@ def extract_ed_medications(
             pharmacy_enriched_flag=0,
             continued_from_home_inferred=0,
             newly_started_during_encounter_inferred=0,
+            medication_episode_id=pd.NA,
+            prescription_segment_count=1,
+            prescription_segments_json=pd.NA,
         )
     )
 
@@ -355,6 +351,9 @@ def extract_hospital_med_orders(
             pharmacy_enriched_flag=0,
             continued_from_home_inferred=0,
             newly_started_during_encounter_inferred=0,
+            medication_episode_id=pd.NA,
+            prescription_segment_count=1,
+            prescription_segments_json=pd.NA,
         )
     )
 
@@ -504,6 +503,9 @@ def extract_hospital_admin_events(
             continued_from_home_inferred=0,
             newly_started_during_encounter_inferred=0,
             stay_id=pd.NA,
+            medication_episode_id=pd.NA,
+            prescription_segment_count=1,
+            prescription_segments_json=pd.NA,
         )
     )
 
@@ -623,8 +625,17 @@ def _fill_medication_event_defaults(dataframe: pd.DataFrame) -> pd.DataFrame:
         "pharmacy_enriched_flag",
         "continued_from_home_inferred",
         "newly_started_during_encounter_inferred",
+        "prescription_segment_count",
     ]:
         filled[column] = pd.to_numeric(filled[column], errors="coerce").fillna(0).astype(int)
+    filled["prescription_segments_json"] = filled["prescription_segments_json"].where(
+        filled["prescription_segments_json"].notna(),
+        pd.NA,
+    )
+    filled["medication_episode_id"] = filled["medication_episode_id"].where(
+        filled["medication_episode_id"].notna(),
+        pd.NA,
+    )
     return filled
 
 
