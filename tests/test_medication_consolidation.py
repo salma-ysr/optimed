@@ -89,9 +89,9 @@ class MedicationConsolidationTests(unittest.TestCase):
             polypharmacy_threshold = 2
 
         burden = build_medication_burden_features(cohort, SettingsStub())
-        self.assertEqual(int(burden.iloc[0]["total_medication_count"]), 3)
-        self.assertEqual(int(burden.iloc[0]["peak_concurrent_medication_count"]), 2)
-        self.assertEqual(int(burden.iloc[0]["polypharmacy_flag"]), 1)
+        self.assertEqual(int(burden.iloc[0]["current_medication_count"]), 3)
+        self.assertEqual(int(burden.iloc[0]["current_peak_concurrent_medication_count"]), 2)
+        self.assertEqual(int(burden.iloc[0]["current_polypharmacy_flag"]), 1)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,11 @@ import type { RiskLabel } from "./types";
 const explanationMap: Record<string, string> = {
   "very high medication burden (10+ distinct medications)":
     "charge médicamenteuse très élevée (10 médicaments distincts ou plus)",
+  "very high current medication burden (10+ active medications)":
+    "charge médicamenteuse actuelle très élevée (10 médicaments actifs ou plus)",
   "polypharmacy during admission": "polypharmacie pendant l’hospitalisation",
+  "current polypharmacy at encounter review time":
+    "polypharmacie actuelle au temps de revue de la rencontre",
   "renal risk based on creatinine": "risque rénal basé sur la créatinine",
   "benzodiazepine exposure": "exposition à une benzodiazépine",
   "opioid exposure": "exposition à un opioïde",

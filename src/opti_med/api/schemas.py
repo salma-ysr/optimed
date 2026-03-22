@@ -34,6 +34,11 @@ class ScoredRow(BaseModel):
     medication_episode_id: str | None = None
     prescription_segment_count: int | None = None
     prescription_segments_json: list[dict[str, object]] | None = None
+    current_medication_count: int | None = None
+    current_peak_concurrent_medication_count: int | None = None
+    current_polypharmacy_flag: int | None = None
+    historical_medication_count: int | None = None
+    historical_polypharmacy_flag: int | None = None
     total_medication_count: int
     peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
@@ -81,6 +86,9 @@ class AdmissionSummary(BaseModel):
     admittime: str
     dischtime: str
     length_of_stay_days: float
+    current_medication_count: int | None = None
+    current_polypharmacy_flag: int | None = None
+    historical_medication_count: int | None = None
     total_medication_count: int
     peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
@@ -138,6 +146,9 @@ class AdmissionDetailResponse(BaseModel):
     admittime: str
     dischtime: str
     length_of_stay_days: float
+    current_medication_count: int | None = None
+    current_polypharmacy_flag: int | None = None
+    historical_medication_count: int | None = None
     total_medication_count: int
     peak_concurrent_medication_count: int | None = None
     polypharmacy_flag: int
@@ -184,6 +195,8 @@ class PatientSummary(BaseModel):
     sex: str
     age_proxy: int
     age_group: str
+    current_medication_count: int | None = None
+    historical_medication_count: int | None = None
     encounter_count: int
     medication_count: int
     flagged_medication_count: int
@@ -212,10 +225,24 @@ class PatientEncounterSummary(BaseModel):
     length_of_stay_days: float
     overall_priority_score: int
     overall_priority_label: str
+    current_medication_count: int | None = None
+    current_polypharmacy_flag: int | None = None
+    historical_medication_count: int | None = None
     total_medication_count: int
     peak_concurrent_medication_count: int | None = None
     flagged_medication_count: int
     overall_priority_drivers: list[str]
+
+
+class DossierEncounterSelection(BaseModel):
+    """Selected encounter and review-time metadata for the patient dossier."""
+
+    encounter_id: str
+    hadm_id: int | None = None
+    stay_id: int | None = None
+    encounter_source: str
+    review_timestamp: str | None = None
+    review_timestamp_source: str | None = None
 
 
 class PatientEncountersResponse(BaseModel):
@@ -232,6 +259,8 @@ class PatientContextObject(BaseModel):
     sex: str
     age_proxy: int
     age_group: str
+    current_medication_count: int | None = None
+    historical_medication_count: int | None = None
     encounter_count: int
     medication_count: int
     peak_concurrent_medication_count: int | None = None
@@ -287,6 +316,11 @@ class PatientMedicationCard(BaseModel):
     anticholinergic_flag: int
     ppi_flag: int
     antipsychotic_flag: int
+    status: str | None = None
+    medication_status: str | None = None
+    last_active_time: str | None = None
+    review_timestamp: str | None = None
+    review_timestamp_source: str | None = None
 
 
 class PatientMedicationsResponse(BaseModel):
@@ -302,8 +336,16 @@ class PatientDetailResponse(BaseModel):
 
     patient_summary: PatientSummary
     encounter_summaries: list[PatientEncounterSummary]
+    selected_encounter: DossierEncounterSelection | None = None
+    review_timestamp: str | None = None
+    current_medication_count: int = 0
+    current_flagged_medication_count: int = 0
+    historical_medication_count: int = 0
     left_column_context: PatientContextObject
+    current_medications: list[PatientMedicationCard] = Field(default_factory=list)
+    previous_medication_history: list[PatientMedicationCard] = Field(default_factory=list)
     ranked_medication_cards: list[PatientMedicationCard]
+    historical_medication_cards: list[PatientMedicationCard] = Field(default_factory=list)
     top_problem_flashes: list[ProblemFlash]
     flagged_medication_count: int
     medication_card_count: int

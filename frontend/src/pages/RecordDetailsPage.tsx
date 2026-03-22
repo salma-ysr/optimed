@@ -295,6 +295,37 @@ function medicationCardId(medication: PatientMedicationCard) {
   return `${medication.hadm_id}-${medication.drug}-${medication.starttime}`;
 }
 
+function currentMedicationCards(record: PatientDetailResponse) {
+  return record.current_medications ?? record.ranked_medication_cards;
+}
+
+function historicalMedicationCards(record: PatientDetailResponse) {
+  return record.previous_medication_history ?? record.historical_medication_cards ?? [];
+}
+
+function reviewTimestampSummary(record: PatientDetailResponse) {
+  const reviewTimestamp = record.review_timestamp ?? record.selected_encounter?.review_timestamp;
+  if (!reviewTimestamp) {
+    return null;
+  }
+  const source = record.selected_encounter?.review_timestamp_source;
+  const sourceLabel =
+    source === "medication_administration"
+      ? "administrations"
+      : source === "medication_order"
+        ? "prescriptions"
+        : source === "lab"
+          ? "biologie"
+          : source === "vitals"
+            ? "constantes"
+            : source === "encounter_end"
+              ? "fin de séjour"
+              : null;
+  return sourceLabel
+    ? `Revue au ${reviewTimestamp} • source ${sourceLabel}`
+    : `Revue au ${reviewTimestamp}`;
+}
+
 function MedicationAlertCard({ medication, expanded, onToggle }: MedicationAlertCardProps) {
   const evidence = evidenceEntries(medication);
   const classBadges = medicationClassBadges(medication);
@@ -450,7 +481,7 @@ export function RecordDetailsPage() {
     if (!record) {
       return;
     }
-    setExpandedMedicationIds(record.ranked_medication_cards.map(medicationCardId));
+    setExpandedMedicationIds(currentMedicationCards(record).map(medicationCardId));
   }
 
   function collapseAllMedications() {
@@ -476,6 +507,18 @@ export function RecordDetailsPage() {
 
       {!isLoading && record ? (
         <section className="details-layout">
+          {(() => {
+            const currentMeds = currentMedicationCards(record);
+            const historicalMeds = historicalMedicationCards(record);
+            const currentMedicationCount =
+              record.current_medication_count ??
+              record.left_column_context.current_medication_count ??
+              currentMeds.length;
+            const currentFlaggedMedicationCount =
+              record.current_flagged_medication_count ?? record.flagged_medication_count;
+            const reviewSummary = reviewTimestampSummary(record);
+
+            return (
           <article className="details-main">
             <section className="details-hero">
               <div className="details-hero-copy">
@@ -506,10 +549,10 @@ export function RecordDetailsPage() {
                 </div>
 
                 <div className="details-stat-card">
-                  <span className="summary-label">Médicaments signalés</span>
-                  <strong>{record.flagged_medication_count}</strong>
+                  <span className="summary-label">Médicaments actuels signalés</span>
+                  <strong>{currentFlaggedMedicationCount}</strong>
                   <span className="score-spotlight-subcopy">
-                    sur {record.left_column_context.medication_count ?? record.medication_card_count} lignes revues
+                    sur {currentMedicationCount} médicaments actuellement pris
                   </span>
                 </div>
 
@@ -655,9 +698,22 @@ export function RecordDetailsPage() {
                 <section className="details-card details-card-emphasis">
                   <div className="medication-list-header">
                     <div>
-                      <h2>Cartes médicamenteuses Opti-Med</h2>
+                      <h2>Médicaments actuellement pris</h2>
                       <p className="details-section-copy">
-                        Workflow principal de revue pharmaco-clinique, classé par IPD décroissant.
+                        {currentFlaggedMedicationCount} signalé
+                        {currentFlaggedMedicationCount === 1 ? "" : "s"} sur {currentMedicationCount} médicament
+                        {currentMedicationCount === 1 ? "" : "s"} actif
+                        {currentMedicationCount === 1 ? "" : "s"}.
+                      </p>
+                      {reviewSummary ? (
+                        <p className="record-subtitle">{reviewSummary}</p>
+                      ) : (
+                        <p className="record-subtitle">
+                          Revue centrée sur les médicaments actifs à l’instant clinique retenu.
+                        </p>
+                      )}
+                      <p className="details-section-copy">
+                        Tri décroissant par priorité actuelle de revue pharmaco-clinique.
                       </p>
                     </div>
                     <div className="medication-list-controls">
@@ -671,17 +727,46 @@ export function RecordDetailsPage() {
                   </div>
                   <div className="medication-scroll-panel">
                     <div className="medications-list medications-list-priority">
-                      {record.ranked_medication_cards.map((medication) => (
-                        <MedicationAlertCard
-                          key={medicationCardId(medication)}
-                          medication={medication}
-                          expanded={expandedMedicationIds.includes(medicationCardId(medication))}
-                          onToggle={() => toggleMedication(medicationCardId(medication))}
-                        />
-                      ))}
+                      {currentMeds.length > 0 ? (
+                        currentMeds.map((medication) => (
+                          <MedicationAlertCard
+                            key={medicationCardId(medication)}
+                            medication={medication}
+                            expanded={expandedMedicationIds.includes(medicationCardId(medication))}
+                            onToggle={() => toggleMedication(medicationCardId(medication))}
+                          />
+                        ))
+                      ) : (
+                        <section className="state-panel">
+                          Aucun médicament actif au temps de revue retenu.
+                        </section>
+                      )}
                     </div>
                   </div>
                 </section>
+
+                {historicalMeds.length > 0 ? (
+                  <section className="details-card">
+                    <details>
+                      <summary>
+                        Historique médicamenteux antérieur ({record.historical_medication_count ?? historicalMeds.length})
+                      </summary>
+                      <p className="details-section-copy">
+                        Médicaments non actifs au temps de revue, conservés pour contexte clinique.
+                      </p>
+                      <div className="medications-list medications-list-priority">
+                        {historicalMeds.map((medication) => (
+                          <MedicationAlertCard
+                            key={`history-${medicationCardId(medication)}`}
+                            medication={medication}
+                            expanded={expandedMedicationIds.includes(`history-${medicationCardId(medication)}`)}
+                            onToggle={() => toggleMedication(`history-${medicationCardId(medication)}`)}
+                          />
+                        ))}
+                      </div>
+                    </details>
+                  </section>
+                ) : null}
               </section>
 
               <aside className="details-column details-column-right">
@@ -756,7 +841,7 @@ export function RecordDetailsPage() {
                         <div className="metric-grid metric-grid-compact">
                           <div className="metric-item">
                             <span className="metric-label">Médicaments</span>
-                            <strong>{encounter.total_medication_count}</strong>
+                            <strong>{encounter.current_medication_count ?? encounter.total_medication_count}</strong>
                           </div>
                           <div className="metric-item">
                             <span className="metric-label">Signalés</span>
@@ -777,6 +862,8 @@ export function RecordDetailsPage() {
               </aside>
             </div>
           </article>
+            );
+          })()}
         </section>
       ) : null}
     </main>

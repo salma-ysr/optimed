@@ -314,8 +314,8 @@ export function RecordsListPage() {
                       <strong>{row.flagged_medication_count}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Expositions totales</span>
-                      <strong>{row.medication_count ?? "N/D"}</strong>
+                      <span className="metric-label">Médicaments actuels</span>
+                      <strong>{row.current_medication_count ?? row.medication_count ?? "N/D"}</strong>
                     </div>
                     <div className="metric-item">
                       <span className="metric-label">Séjours suivis</span>

@@ -127,22 +127,27 @@ BUCKETED_SCORING_RULES: tuple[BucketedScoringRule, ...] = (
         name="very_high_medication_burden",
         bucket="base_medication_risk",
         points=2,
-        predicate=lambda row: int(row.get("total_medication_count", 0)) >= 10,
-        clinician_reason="very high medication burden (10+ distinct medications)",
-        alert_fragment="very high medication count",
-        evidence_builder=_evidence("total_medication_count"),
+        predicate=lambda row: int(
+            row.get("current_medication_count", row.get("total_medication_count", 0))
+        ) >= 10,
+        clinician_reason="very high current medication burden (10+ active medications)",
+        alert_fragment="very high current medication count",
+        evidence_builder=_evidence("current_medication_count", "historical_medication_count"),
     ),
     BucketedScoringRule(
         name="polypharmacy",
         bucket="base_medication_risk",
         points=1,
-        predicate=lambda row: int(row.get("polypharmacy_flag", 0)) == 1,
-        clinician_reason="polypharmacy during admission",
+        predicate=lambda row: int(
+            row.get("current_polypharmacy_flag", row.get("polypharmacy_flag", 0))
+        ) == 1,
+        clinician_reason="current polypharmacy at encounter review time",
         alert_fragment="polypharmacy",
         evidence_builder=_evidence(
-            "total_medication_count",
-            "peak_concurrent_medication_count",
-            "polypharmacy_flag",
+            "current_medication_count",
+            "current_peak_concurrent_medication_count",
+            "current_polypharmacy_flag",
+            "historical_medication_count",
         ),
     ),
     BucketedScoringRule(

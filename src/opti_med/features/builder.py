@@ -9,7 +9,10 @@ import pandas as pd
 
 from opti_med.cohort.builder import OlderAdultMedicationCohortBuilder
 from opti_med.config import Settings
+from opti_med.data_access.encounters import EncounterIndexBuilder
 from opti_med.data_access.loaders import MimicDualDemoLoader
+from opti_med.data_access.medication_events import CanonicalMedicationEventBuilder
+from opti_med.data_access.medication_snapshot import build_encounter_medication_review
 from opti_med.features.context import build_patient_context_features
 from opti_med.features.mappings.diagnoses import DIAGNOSIS_ICD_PREFIXES
 from opti_med.features.mappings.labs import serum_creatinine_itemids
@@ -32,6 +35,8 @@ class MinimalFeatureBuilder:
         self.settings = settings
         self.cohort_builder = OlderAdultMedicationCohortBuilder(settings)
         self.dual_loader = MimicDualDemoLoader(settings)
+        self.encounter_builder = EncounterIndexBuilder(settings)
+        self.medication_event_builder = CanonicalMedicationEventBuilder(settings)
 
     def build(self) -> pd.DataFrame:
         """Build the processed cohort dataframe."""
@@ -42,6 +47,15 @@ class MinimalFeatureBuilder:
         ed_diagnosis_loaded = self.dual_loader.load_optional_ed_table("diagnosis")
         triage_loaded = self.dual_loader.load_optional_ed_table("triage")
         vitalsign_loaded = self.dual_loader.load_optional_ed_table("vitalsign")
+        medication_review = build_encounter_medication_review(
+            medication_events=self.medication_event_builder.build(),
+            encounter_index=self.encounter_builder.build(),
+            snapshot_strategy=self.settings.snapshot_strategy,
+            labevents=tables["labevents"],
+            triage=triage_loaded.dataframe if triage_loaded else None,
+            vitalsign=vitalsign_loaded.dataframe if vitalsign_loaded else None,
+        )
+        cohort = filter_cohort_to_current_medications(cohort, medication_review)
 
         patient_context_features = build_patient_context_features(
             admissions=tables["admissions"],
@@ -56,7 +70,11 @@ class MinimalFeatureBuilder:
             creatinine_threshold=self.settings.renal_risk_creatinine_threshold,
             serum_creatinine_ids=self.settings.serum_creatinine_itemids,
         )
-        medication_burden_features = build_medication_burden_features(cohort, self.settings)
+        medication_burden_features = build_medication_burden_features(
+            current_cohort=cohort,
+            settings=self.settings,
+            medication_review=medication_review,
+        )
 
         enriched = cohort.merge(
             patient_context_features,
@@ -143,48 +161,119 @@ def build_creatinine_features(labevents: pd.DataFrame, settings: Settings) -> pd
     return features
 
 
-def build_medication_burden_features(cohort: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """Aggregate medication burden from canonical medication episodes.
+def filter_cohort_to_current_medications(
+    cohort: pd.DataFrame,
+    medication_review: pd.DataFrame,
+) -> pd.DataFrame:
+    """Keep only canonical cohort rows that are active at the encounter review timestamp."""
+    if cohort.empty or medication_review.empty:
+        return cohort.iloc[0:0].copy()
 
-    ``total_medication_count`` counts collapsed episode rows per admission.
-    ``peak_concurrent_medication_count`` counts how many canonical episodes overlap in time,
-    which is the value used to decide the polypharmacy flag.
-    """
-    if cohort.empty:
+    active_review = medication_review.loc[
+        medication_review["medication_status"] == "active_at_review_time",
+        ["hadm_id", "medication_normalized", "review_timestamp", "review_timestamp_source"],
+    ].dropna(subset=["hadm_id", "medication_normalized"]).copy()
+    if active_review.empty:
+        return cohort.iloc[0:0].copy()
+
+    active_review["hadm_id"] = pd.to_numeric(active_review["hadm_id"], errors="coerce").astype("Int64")
+    active_review = (
+        active_review.sort_values(["hadm_id", "medication_normalized", "review_timestamp"])
+        .drop_duplicates(subset=["hadm_id", "medication_normalized"], keep="last")
+        .reset_index(drop=True)
+    )
+    active_keys = active_review.assign(_is_current_medication=1)
+    filtered = cohort.merge(
+        active_keys,
+        how="inner",
+        left_on=["hadm_id", "drug_normalized"],
+        right_on=["hadm_id", "medication_normalized"],
+        validate="many_to_one",
+    )
+    filtered = filtered.drop(columns=["medication_normalized"]).reset_index(drop=True)
+    return filtered
+
+
+def build_medication_burden_features(
+    current_cohort: pd.DataFrame,
+    settings: Settings,
+    medication_review: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Aggregate current-vs-historical medication burden from canonical medication episodes."""
+    if current_cohort.empty:
         return pd.DataFrame(
             columns=[
                 "hadm_id",
+                "current_medication_count",
+                "current_peak_concurrent_medication_count",
+                "current_polypharmacy_flag",
+                "historical_medication_count",
+                "historical_polypharmacy_flag",
                 "total_medication_count",
                 "peak_concurrent_medication_count",
                 "polypharmacy_flag",
             ]
         )
 
-    burden = (
-        cohort.groupby("hadm_id", as_index=False)
-        .agg(total_medication_count=("medication_episode_id", "nunique"))
+    current_burden = (
+        current_cohort.groupby("hadm_id", as_index=False)
+        .agg(current_medication_count=("medication_episode_id", "nunique"))
     )
-    grouped_intervals = cohort.loc[:, ["hadm_id", "starttime", "stoptime", "dischtime"]].groupby(
+    grouped_intervals = current_cohort.loc[:, ["hadm_id", "starttime", "stoptime", "dischtime"]].groupby(
         "hadm_id",
         sort=False,
     )
     try:
-        concurrent_counts = (
+        current_concurrent_counts = (
             grouped_intervals.apply(_peak_concurrent_medication_count, include_groups=False)
-            .rename("peak_concurrent_medication_count")
+            .rename("current_peak_concurrent_medication_count")
             .reset_index()
         )
     except TypeError:
-        concurrent_counts = (
+        current_concurrent_counts = (
             grouped_intervals.apply(_peak_concurrent_medication_count)
-            .rename("peak_concurrent_medication_count")
+            .rename("current_peak_concurrent_medication_count")
             .reset_index()
         )
-    burden = burden.merge(concurrent_counts, on="hadm_id", how="left", validate="one_to_one")
-    burden["polypharmacy_flag"] = (
-        burden["peak_concurrent_medication_count"] >= settings.polypharmacy_threshold
+    burden = current_burden.merge(current_concurrent_counts, on="hadm_id", how="left", validate="one_to_one")
+    if medication_review is not None and not medication_review.empty:
+        historical_counts = _historical_medication_burden_from_review(medication_review, settings)
+        burden = burden.merge(historical_counts, on="hadm_id", how="left", validate="one_to_one")
+    else:
+        burden["historical_medication_count"] = burden["current_medication_count"]
+        burden["historical_polypharmacy_flag"] = (
+            burden["current_medication_count"] >= settings.polypharmacy_threshold
+        ).astype(int)
+
+    burden["current_peak_concurrent_medication_count"] = burden["current_peak_concurrent_medication_count"].fillna(
+        burden["current_medication_count"]
+    )
+    burden["current_polypharmacy_flag"] = (
+        burden["current_medication_count"] >= settings.polypharmacy_threshold
     ).astype(int)
+    # Compatibility adapters: legacy fields now mean current encounter-active burden.
+    burden["total_medication_count"] = burden["current_medication_count"]
+    burden["peak_concurrent_medication_count"] = burden["current_peak_concurrent_medication_count"]
+    burden["polypharmacy_flag"] = burden["current_polypharmacy_flag"]
     return burden
+
+
+def _historical_medication_burden_from_review(
+    medication_review: pd.DataFrame,
+    settings: Settings,
+) -> pd.DataFrame:
+    review = medication_review.loc[medication_review["hadm_id"].notna()].copy()
+    if review.empty:
+        return pd.DataFrame(columns=["hadm_id", "historical_medication_count", "historical_polypharmacy_flag"])
+    review["hadm_id"] = pd.to_numeric(review["hadm_id"], errors="coerce").astype("Int64")
+    counts = (
+        review.groupby("hadm_id", as_index=False)
+        .agg(historical_medication_count=("medication_normalized", "nunique"))
+    )
+    counts["historical_polypharmacy_flag"] = (
+        counts["historical_medication_count"] >= settings.polypharmacy_threshold
+    ).astype(int)
+    return counts
 
 
 def _peak_concurrent_medication_count(group: pd.DataFrame) -> int:
@@ -239,6 +328,8 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "ed_diagnosis_risk_cardiac_flag",
         "ed_diagnosis_risk_metabolic_flag",
         "renal_risk_flag",
+        "current_polypharmacy_flag",
+        "historical_polypharmacy_flag",
         "polypharmacy_flag",
         "benzodiazepine_flag",
         "opioid_flag",
@@ -264,6 +355,9 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "sodium_max",
         "sodium_mean",
         "sodium_delta",
+        "current_medication_count",
+        "current_peak_concurrent_medication_count",
+        "historical_medication_count",
         "total_medication_count",
         "peak_concurrent_medication_count",
         "weight_kg",
@@ -300,6 +394,11 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         "medication_episode_id",
         "prescription_segment_count",
         "prescription_segments_json",
+        "current_medication_count",
+        "current_peak_concurrent_medication_count",
+        "current_polypharmacy_flag",
+        "historical_medication_count",
+        "historical_polypharmacy_flag",
         "total_medication_count",
         "peak_concurrent_medication_count",
         "polypharmacy_flag",
@@ -399,11 +498,11 @@ def finalize_processed_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 def summarize_processed_cohort(dataframe: pd.DataFrame) -> list[str]:
     """Return compact summaries for the processed cohort CLI."""
     admission_flags = (
-        dataframe.loc[:, ["hadm_id", "polypharmacy_flag", "renal_risk_flag"]]
+        dataframe.loc[:, ["hadm_id", "current_polypharmacy_flag", "renal_risk_flag"]]
         .drop_duplicates(subset=["hadm_id"])
         .reset_index(drop=True)
     )
-    polypharmacy_admissions = int(admission_flags["polypharmacy_flag"].sum())
+    polypharmacy_admissions = int(admission_flags["current_polypharmacy_flag"].sum())
     renal_risk_admissions = int(admission_flags["renal_risk_flag"].sum())
     return [
         f"rows={len(dataframe):,}, columns={dataframe.shape[1]}",

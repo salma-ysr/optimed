@@ -13,6 +13,11 @@ export interface ScoredRow {
   drug: string;
   starttime: string;
   stoptime: string | null;
+  current_medication_count?: number | null;
+  current_peak_concurrent_medication_count?: number | null;
+  current_polypharmacy_flag?: number | null;
+  historical_medication_count?: number | null;
+  historical_polypharmacy_flag?: number | null;
   total_medication_count: number;
   polypharmacy_flag: number;
   benzodiazepine_flag: number;
@@ -55,6 +60,9 @@ export interface AdmissionSummary {
   admittime: string;
   dischtime: string;
   length_of_stay_days: number;
+  current_medication_count?: number | null;
+  current_polypharmacy_flag?: number | null;
+  historical_medication_count?: number | null;
   total_medication_count: number;
   polypharmacy_flag: number;
   creatinine_max: number | null;
@@ -77,6 +85,8 @@ export interface PatientSummary {
   sex?: string | null;
   age_proxy?: number | null;
   age_group?: string | null;
+  current_medication_count?: number | null;
+  historical_medication_count?: number | null;
   encounter_count?: number | null;
   medication_count?: number | null;
   flagged_medication_count: number;
@@ -127,6 +137,9 @@ export interface AdmissionDetailResponse {
   admittime: string;
   dischtime: string;
   length_of_stay_days: number;
+  current_medication_count?: number | null;
+  current_polypharmacy_flag?: number | null;
+  historical_medication_count?: number | null;
   total_medication_count: number;
   polypharmacy_flag: number;
   ckd_flag: number;
@@ -172,6 +185,9 @@ export interface PatientEncounterSummary {
   length_of_stay_days: number;
   overall_priority_score: number;
   overall_priority_label: RiskLabel;
+  current_medication_count?: number | null;
+  current_polypharmacy_flag?: number | null;
+  historical_medication_count?: number | null;
   total_medication_count: number;
   flagged_medication_count: number;
   overall_priority_drivers: string[];
@@ -181,6 +197,8 @@ export interface PatientContextObject {
   sex?: string | null;
   age_proxy?: number | null;
   age_group?: string | null;
+  current_medication_count?: number | null;
+  historical_medication_count?: number | null;
   encounter_count?: number | null;
   medication_count?: number | null;
   flagged_medication_count?: number | null;
@@ -219,13 +237,33 @@ export interface PatientMedicationCard extends MedicationRowSummary {
   admittime: string;
   dischtime: string;
   length_of_stay_days: number;
+  status?: string | null;
+  medication_status?: string | null;
+  last_active_time?: string | null;
+  review_timestamp?: string | null;
+  review_timestamp_source?: string | null;
 }
 
 export interface PatientDetailResponse {
   patient_summary: PatientSummary;
   encounter_summaries: PatientEncounterSummary[];
+  selected_encounter?: {
+    encounter_id: string;
+    hadm_id?: number | null;
+    stay_id?: number | null;
+    encounter_source: string;
+    review_timestamp?: string | null;
+    review_timestamp_source?: string | null;
+  } | null;
+  review_timestamp?: string | null;
+  current_medication_count?: number | null;
+  current_flagged_medication_count?: number | null;
+  historical_medication_count?: number | null;
   left_column_context: PatientContextObject;
+  current_medications?: PatientMedicationCard[] | null;
+  previous_medication_history?: PatientMedicationCard[] | null;
   ranked_medication_cards: PatientMedicationCard[];
+  historical_medication_cards?: PatientMedicationCard[] | null;
   top_problem_flashes: ProblemFlash[];
   flagged_medication_count: number;
   medication_card_count: number;
