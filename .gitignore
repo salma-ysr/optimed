@@ -2,9 +2,7 @@
 .venv/
 
 # data
-data/external/
-data/interim/
-data/processed/
+data/*
 
 # python cache
 src/opti_med/__pycache__/
