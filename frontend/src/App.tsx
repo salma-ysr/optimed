@@ -6,6 +6,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<RecordsListPage />} />
+      <Route path="/patients/:subjectId" element={<RecordDetailsPage />} />
       <Route path="/records/:subjectId/:hadmId" element={<RecordDetailsPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

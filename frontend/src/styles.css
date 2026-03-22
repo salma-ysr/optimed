@@ -119,6 +119,61 @@ button {
   margin-top: 24px;
 }
 
+.filters-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 22px;
+}
+
+.filters-toolbar,
+.filters-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.filters-toolbar {
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.search-field {
+  min-width: min(100%, 320px);
+  display: grid;
+  gap: 8px;
+}
+
+.sort-field {
+  min-width: 220px;
+  display: grid;
+  gap: 8px;
+}
+
+.search-field input {
+  width: 100%;
+  border: 1px solid rgba(18, 57, 85, 0.14);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #163046;
+}
+
+.sort-field select {
+  width: 100%;
+  border: 1px solid rgba(18, 57, 85, 0.14);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #163046;
+}
+
 .record-card {
   text-decoration: none;
   padding: 22px;
@@ -150,6 +205,12 @@ button {
 
 .record-body {
   margin-top: 18px;
+}
+
+.flash-diagnostic {
+  margin: 0;
+  font-weight: 600;
+  color: #23475f;
 }
 
 .metric-group strong,
@@ -212,6 +273,12 @@ button {
   color: #34566c;
 }
 
+.chip-active {
+  background: linear-gradient(135deg, #dff2ec, #e7eef8);
+  color: #163046;
+  border: 1px solid rgba(18, 57, 85, 0.12);
+}
+
 .state-panel {
   margin-top: 24px;
   padding: 24px;
@@ -254,8 +321,25 @@ button {
   box-shadow: 0 16px 40px rgba(32, 68, 98, 0.08);
 }
 
+.details-hero-copy {
+  max-width: 620px;
+}
+
+.dossier-summary {
+  margin: 14px 0 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #23475f;
+}
+
+.dossier-hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  width: min(100%, 620px);
+}
+
 .score-spotlight {
-  min-width: 210px;
   display: grid;
   gap: 10px;
   align-content: center;
@@ -265,8 +349,23 @@ button {
   background: #f7fbfd;
 }
 
+.details-stat-card {
+  display: grid;
+  gap: 10px;
+  align-content: center;
+  padding: 18px;
+  border-radius: 22px;
+  background: #f7fbfd;
+}
+
 .score-spotlight strong {
   font-size: 2.8rem;
+  line-height: 1;
+  color: #163046;
+}
+
+.details-stat-card strong {
+  font-size: 2rem;
   line-height: 1;
   color: #163046;
 }
@@ -282,9 +381,38 @@ button {
   gap: 18px;
 }
 
+.dossier-columns {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(0, 1.55fr) minmax(260px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.details-column {
+  display: grid;
+  gap: 18px;
+}
+
+.details-column-left,
+.details-column-right {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+
 .details-card {
   padding: 22px;
   border-radius: 24px;
+}
+
+.clinical-context-card {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 26px rgba(32, 68, 98, 0.06);
+}
+
+.decision-support-card {
+  background: rgba(251, 253, 254, 0.94);
+  box-shadow: 0 8px 22px rgba(32, 68, 98, 0.04);
 }
 
 .details-card-emphasis {
@@ -312,6 +440,43 @@ button {
 .detail-list dt,
 .detail-list dd {
   margin: 0;
+}
+
+.clinical-context-list dd {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+  gap: 2px;
+}
+
+.context-hint {
+  color: #7d92a0;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.decision-support-summary {
+  margin: 12px 0 0;
+  color: #23475f;
+}
+
+.decision-support-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: #31556a;
+}
+
+.decision-support-empty {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f4f8fb;
+  border: 1px solid rgba(18, 57, 85, 0.06);
+}
+
+.decision-support-empty p {
+  margin: 10px 0 0;
+  color: #617b8b;
 }
 
 .explanation-copy {
@@ -368,6 +533,132 @@ button {
   color: #31556a;
 }
 
+.medication-alert-card {
+  padding: 24px;
+  border-radius: 24px;
+  border: 1px solid rgba(18, 57, 85, 0.1);
+  box-shadow: 0 18px 40px rgba(32, 68, 98, 0.08);
+}
+
+.medication-alert-card-high {
+  background: linear-gradient(180deg, #fff8f6 0%, #fff1ec 100%);
+  border-color: rgba(171, 58, 32, 0.18);
+}
+
+.medication-alert-card-medium {
+  background: linear-gradient(180deg, #fffdf5 0%, #fff7de 100%);
+  border-color: rgba(138, 98, 0, 0.18);
+}
+
+.medication-alert-card-low {
+  background: linear-gradient(180deg, #fafcfd 0%, #f3f7fa 100%);
+  border-color: rgba(52, 86, 108, 0.12);
+}
+
+.medication-alert-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.medication-alert-title-block {
+  display: grid;
+  gap: 6px;
+}
+
+.medication-alert-name {
+  margin: 0;
+  font-size: 1.3rem;
+  line-height: 1.1;
+  font-weight: 800;
+  color: #163046;
+}
+
+.medication-alert-meta {
+  margin: 0;
+  color: #31556a;
+  font-weight: 600;
+}
+
+.medication-alert-score {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.med-score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  min-height: 78px;
+  border-radius: 999px;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.med-score-badge-high {
+  background: #ab3a20;
+  color: #fff7f3;
+}
+
+.med-score-badge-medium {
+  background: #b48918;
+  color: #fffdf5;
+}
+
+.med-score-badge-low {
+  background: #dfe7ec;
+  color: #34566c;
+}
+
+.medication-alert-section {
+  margin-top: 18px;
+}
+
+.medication-alert-section-title {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5a7688;
+}
+
+.medication-alert-copy {
+  margin: 0;
+  color: #23475f;
+  font-size: 0.98rem;
+}
+
+.medication-evidence-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.medication-evidence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(18, 57, 85, 0.08);
+  color: #31556a;
+  font-size: 0.84rem;
+}
+
+.encounter-list {
+  gap: 12px;
+}
+
+.metric-grid-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 @media (max-width: 900px) {
   .summary-grid,
   .records-grid,
@@ -377,7 +668,30 @@ button {
 
   .hero-panel,
   .record-topline,
-  .details-hero {
+  .details-hero,
+  .medication-alert-header {
     flex-direction: column;
+  }
+
+  .filters-toolbar {
+    align-items: stretch;
+  }
+
+  .controls-row {
+    justify-content: stretch;
+  }
+
+  .dossier-hero-metrics,
+  .dossier-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .details-column-left,
+  .details-column-right {
+    position: static;
+  }
+
+  .medication-alert-score {
+    justify-items: start;
   }
 }

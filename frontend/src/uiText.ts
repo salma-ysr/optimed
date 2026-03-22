@@ -47,6 +47,15 @@ const medicationClassMap: Record<string, string> = {
   PPI: "IPP",
 };
 
+const problemFlashMap: Record<string, string> = {
+  "Renal toxicity": "Toxicité rénale",
+  Oversedation: "Sursédation",
+  "Fall risk": "Risque de chute",
+  Confusion: "Confusion",
+  "Cognitive risk": "Risque cognitif",
+  "Confusion / cognitive risk": "Confusion / risque cognitif",
+};
+
 export function translateRiskLabel(label: RiskLabel): string {
   if (label === "high") {
     return "Risque élevé";
@@ -76,4 +85,8 @@ export function translateMedicationClass(label: string): string {
 
 export function translateBucketLabel(label: string): string {
   return bucketLabelMap[label] ?? label;
+}
+
+export function translateProblemFlash(label: string): string {
+  return problemFlashMap[label] ?? label;
 }

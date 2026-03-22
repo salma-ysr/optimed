@@ -226,6 +226,30 @@ The processed output adds:
 - medication burden: `total_medication_count`, `polypharmacy_flag`
 - high-risk medication flags: `benzodiazepine_flag`, `opioid_flag`, `anticholinergic_flag`, `ppi_flag`, `antipsychotic_flag`
 
+The feature engineering layer now also builds a reusable admission-level patient context object and merges it into the processed cohort. This adds:
+
+- diagnosis-derived risk categories using the curated ICD dictionary
+- supplemental ED diagnosis risk flags when an ED stay links to the admission
+- morphology and reserve fields from `patients` and `omr`:
+  - weight
+  - BMI
+  - eGFR
+  - Cockcroft-Gault when weight is available
+- dynamic medication-relevant evidence from `labevents`, `triage`, and `vitalsign`:
+  - creatinine trend
+  - potassium summaries
+  - sodium summaries
+  - blood pressure summaries
+  - heart-rate summaries
+  - pain summaries when available
+- explicit provenance and unavailable-reason fields so downstream API work can distinguish observed, derived, and unavailable values
+
+Current guardrails:
+
+- values are only emitted when supported by the demo data
+- OMR morphology values are taken only from records on or before the encounter end
+- if Cockcroft-Gault cannot be computed because weight is missing, the value remains null and the reason is exposed explicitly
+
 Build the final scored cohort:
 
 ```bash
@@ -249,6 +273,21 @@ The scored output adds:
 - `deprescribing_priority_score`
 - `deprescribing_priority_label`
 - `deprescribing_priority_explanation`
+
+The scoring layer now uses a structured IPD model with three buckets:
+
+- base medication risk
+- terrain or aggravating patient context
+- dynamic biologic and vital evidence
+
+Each scored medication row now also carries:
+
+- a short summary alert
+- bucket-by-bucket score breakdown
+- structured clinician-readable reasons
+- structured evidence values used in the score
+
+The normalized score remains interpretable on a capped 0-to-10 scale, and the medication-class flags from the earlier MVP are still reused as part of the base medication-risk bucket.
 
 The scoring rules are intentionally transparent and live in [src/opti_med/scoring/rules.py](/Users/salmayousry/Desktop/optimed/src/opti_med/scoring/rules.py) so they can be inspected and revised without changing the rest of the pipeline.
 
@@ -363,6 +402,14 @@ Available endpoints:
 
 - `GET /health`
   - simple health check plus whether the scored output file exists
+- `GET /patients`
+  - list patient-centered dossier summaries
+- `GET /patients/{subject_id}`
+  - return one patient dossier with encounter summaries, left-column context, ranked medication cards, and top problem flashes
+- `GET /patients/{subject_id}/medications`
+  - return ranked medication cards for one patient
+- `GET /patients/{subject_id}/encounters`
+  - return encounter summaries for one patient
 - `GET /scores`
   - list scored medication rows
   - supports `limit`, `offset`, `subject_id`, `hadm_id`, and `risk_label`
@@ -381,6 +428,10 @@ Example requests:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl "http://127.0.0.1:8000/patients?limit=10"
+curl "http://127.0.0.1:8000/patients/${SUBJECT_ID}"
+curl "http://127.0.0.1:8000/patients/${SUBJECT_ID}/medications"
+curl "http://127.0.0.1:8000/patients/${SUBJECT_ID}/encounters"
 curl "http://127.0.0.1:8000/admissions?limit=10"
 curl "http://127.0.0.1:8000/scores?limit=5"
 curl "http://127.0.0.1:8000/scores?risk_label=high&limit=10"

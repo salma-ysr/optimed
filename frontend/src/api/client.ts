@@ -1,6 +1,7 @@
 import type {
   AdmissionSummariesResponse,
-  AdmissionDetailResponse,
+  PatientDetailResponse,
+  PatientSummariesResponse,
   ScoredOutputSummary,
 } from "../types";
 
@@ -29,15 +30,22 @@ export function getAdmissionSummaries(
   return apiRequest<AdmissionSummariesResponse>(`/admissions?limit=${limit}&offset=${offset}`);
 }
 
-export function getAdmissionDetail(params: {
-  subjectId: string;
-  hadmId: string;
-}): Promise<AdmissionDetailResponse> {
-  const query = new URLSearchParams({
-    subject_id: params.subjectId,
-    hadm_id: params.hadmId,
-  });
-  return apiRequest<AdmissionDetailResponse>(`/scores/admission?${query.toString()}`);
+export function getPatientSummaries(params?: {
+  limit?: number;
+  offset?: number;
+  riskLabel?: "low" | "medium" | "high";
+}): Promise<PatientSummariesResponse> {
+  const query = new URLSearchParams();
+  query.set("limit", String(params?.limit ?? 100));
+  query.set("offset", String(params?.offset ?? 0));
+  if (params?.riskLabel) {
+    query.set("risk_label", params.riskLabel);
+  }
+  return apiRequest<PatientSummariesResponse>(`/patients?${query.toString()}`);
+}
+
+export function getPatientDetail(subjectId: string): Promise<PatientDetailResponse> {
+  return apiRequest<PatientDetailResponse>(`/patients/${subjectId}`);
 }
 
 export function getLatestScoredOutput(): Promise<ScoredOutputSummary> {

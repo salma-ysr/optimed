@@ -32,6 +32,7 @@ src/opti_med/data_access/medication_snapshot.py
 src/opti_med/data_access/schemas.py
 src/opti_med/features/__init__.py
 src/opti_med/features/builder.py
+src/opti_med/features/context.py
 src/opti_med/features/mappings/__init__.py
 src/opti_med/features/mappings/diagnoses.py
 src/opti_med/features/mappings/labs.py
@@ -40,3 +41,5 @@ src/opti_med/scoring/__init__.py
 src/opti_med/scoring/rules.py
 src/opti_med/scoring/scorer.py
 tests/test_medication_snapshot.py
+tests/test_patient_context.py
+tests/test_scoring.py

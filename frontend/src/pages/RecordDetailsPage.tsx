@@ -1,14 +1,45 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getAdmissionDetail } from "../api/client";
-import type { AdmissionDetailResponse, MedicationRowSummary, RiskLabel } from "../types";
+import { getPatientDetail } from "../api/client";
+import type {
+  PatientDetailResponse,
+  PatientEncounterSummary,
+  PatientMedicationCard,
+  ProblemFlash,
+  RiskLabel,
+} from "../types";
 import {
   translateBucketLabel,
   translateDriverList,
   translateExplanation,
   translateMedicationClass,
+  translateProblemFlash,
   translateRiskLabel,
 } from "../uiText";
+
+type ContextItem = {
+  label: string;
+  value?: string | number | null;
+  hint?: string | null;
+  hideWhenMissing?: boolean;
+};
+
+type ContextSectionProps = {
+  title: string;
+  items: ContextItem[];
+};
+
+type MedicationAlertCardProps = {
+  medication: PatientMedicationCard;
+};
+
+type DecisionSupportPanelProps = {
+  title: string;
+  description?: string;
+  items?: string[];
+  summary?: string | null;
+  emptyLabel: string;
+};
 
 function riskTone(label: RiskLabel) {
   if (label === "high") {
@@ -20,21 +51,338 @@ function riskTone(label: RiskLabel) {
   return "chip chip-low";
 }
 
-function medicationClassBadges(medication: MedicationRowSummary) {
+function medicationClassBadges(medication: PatientMedicationCard) {
   return medication.medication_classes.map(translateMedicationClass);
 }
 
-function bucketBreakdownText(medication: MedicationRowSummary) {
+function bucketBreakdownText(medication: PatientMedicationCard) {
   return Object.entries(medication.deprescribing_priority_bucket_scores_json)
     .filter(([, value]) => value > 0)
     .map(([bucket, value]) => `${translateBucketLabel(bucket)}: ${value}`)
     .join(" • ");
 }
 
-export function RecordDetailsPage() {
-  const { subjectId = "", hadmId = "" } = useParams();
+function encounterSubtitle(encounter: PatientEncounterSummary) {
+  const parts = [encounter.admission_type, `${encounter.length_of_stay_days.toFixed(1)} jours`].filter(Boolean);
+  return parts.join(" • ");
+}
 
-  const [record, setRecord] = useState<AdmissionDetailResponse | null>(null);
+function problemFlashReason(flash: ProblemFlash) {
+  const translated = translateProblemFlash(flash.label);
+  return `${translated} · ${flash.reason}`;
+}
+
+function dossierFlashDiagnostic(record: PatientDetailResponse) {
+  const primaryFlash = record.top_problem_flashes[0];
+  if (primaryFlash) {
+    return `${translateProblemFlash(primaryFlash.label)} à prioriser dans la revue médicamenteuse.`;
+  }
+  if (record.patient_summary.highest_priority_label === "high") {
+    return "Plusieurs expositions justifient une revue rapprochée.";
+  }
+  if (record.patient_summary.highest_priority_label === "medium") {
+    return "Révision médicamenteuse utile au prochain point clinique.";
+  }
+  return "Profil sans signal majeur structuré pour le moment.";
+}
+
+function encounterContextLine(encounters: PatientEncounterSummary[]) {
+  const latestEncounter = encounters[0];
+  if (!latestEncounter) {
+    return null;
+  }
+  return `Contexte récent : séjour ${latestEncounter.hadm_id} • ${encounterSubtitle(latestEncounter)}`;
+}
+
+function formatValue(value: string | number | null | undefined) {
+  if (value == null || value === "") {
+    return "Indisponible";
+  }
+  return String(value);
+}
+
+function yesNoUnavailable(value: boolean | null | undefined) {
+  if (value == null) {
+    return null;
+  }
+  return value ? "Présent" : "Absent";
+}
+
+function summarizeCognition(record: PatientDetailResponse) {
+  if (record.left_column_context.dementia_present || record.left_column_context.delirium_present) {
+    const parts: string[] = [];
+    if (record.left_column_context.dementia_present) {
+      parts.push("démence");
+    }
+    if (record.left_column_context.delirium_present) {
+      parts.push("delirium");
+    }
+    return parts.join(" + ");
+  }
+  if (
+    record.top_problem_flashes.some((flash) =>
+      ["confusion", "cognitive_risk"].includes(flash.key) ||
+      flash.label.toLowerCase().includes("confusion") ||
+      flash.label.toLowerCase().includes("cognitive"),
+    )
+  ) {
+    return "signal cognitif";
+  }
+  return null;
+}
+
+function summarizeFallRisk(record: PatientDetailResponse) {
+  return record.top_problem_flashes.some((flash) => flash.key === "fall_risk")
+    ? "Présent"
+    : null;
+}
+
+function buildChronicRiskLabels(record: PatientDetailResponse) {
+  const items: string[] = [];
+  if (record.left_column_context.ckd_present) {
+    items.push("IRC");
+  }
+  if (record.left_column_context.heart_failure_present) {
+    items.push("insuffisance cardiaque");
+  }
+  if (record.left_column_context.diabetes_present) {
+    items.push("diabète");
+  }
+  if (record.left_column_context.polypharmacy_present) {
+    items.push("polypharmacie");
+  }
+  return items.length > 0 ? items.join(" • ") : null;
+}
+
+function ContextSection({ title, items }: ContextSectionProps) {
+  const visibleItems = items.filter((item) =>
+    item.hideWhenMissing ? item.value != null && item.value !== "" : true,
+  );
+  const hasMeaningfulValue = visibleItems.some((item) => item.value != null && item.value !== "");
+  if (!hasMeaningfulValue && visibleItems.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="details-card clinical-context-card">
+      <h2>{title}</h2>
+      <dl className="detail-list clinical-context-list">
+        {visibleItems.map((item) => (
+          <div key={`${title}-${item.label}`}>
+            <dt>{item.label}</dt>
+            <dd>
+              <span>{formatValue(item.value)}</span>
+              {item.hint ? <small className="context-hint">{item.hint}</small> : null}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function scoreBadgeTone(label: RiskLabel) {
+  if (label === "high") {
+    return "med-score-badge med-score-badge-high";
+  }
+  if (label === "medium") {
+    return "med-score-badge med-score-badge-medium";
+  }
+  return "med-score-badge med-score-badge-low";
+}
+
+function medicationCardTone(label: RiskLabel) {
+  if (label === "high") {
+    return "medication-alert-card medication-alert-card-high";
+  }
+  if (label === "medium") {
+    return "medication-alert-card medication-alert-card-medium";
+  }
+  return "medication-alert-card medication-alert-card-low";
+}
+
+function routeDoseFrequencyLine(medication: PatientMedicationCard) {
+  const evidence = medication.deprescribing_priority_evidence_json ?? {};
+  const candidates = [
+    evidence.dose,
+    evidence.route,
+    evidence.frequency,
+    evidence.freq,
+    evidence.schedule,
+    evidence.sig,
+  ]
+    .filter((value) => value != null && value !== "")
+    .map((value) => String(value));
+
+  if (candidates.length > 0) {
+    return candidates.join(" • ");
+  }
+
+  const classLine = medicationClassBadges(medication);
+  if (classLine.length > 0) {
+    return classLine.join(" • ");
+  }
+
+  return "Posologie détaillée indisponible";
+}
+
+function contextualReasonText(medication: PatientMedicationCard) {
+  const reasons =
+    medication.deprescribing_priority_reasons_json.length > 0
+      ? medication.deprescribing_priority_reasons_json
+      : medication.deprescribing_priority_explanation
+          .split(";")
+          .map((item) => item.trim())
+          .filter(Boolean);
+
+  if (reasons.length === 0) {
+    return "Contexte structuré indisponible.";
+  }
+
+  return translateDriverList(reasons).join(" • ");
+}
+
+function alertSignalText(medication: PatientMedicationCard) {
+  if (medication.deprescribing_priority_summary_alert.trim()) {
+    return medication.deprescribing_priority_summary_alert.trim();
+  }
+  return translateExplanation(medication.deprescribing_priority_explanation);
+}
+
+function evidenceEntries(medication: PatientMedicationCard) {
+  return Object.entries(medication.deprescribing_priority_evidence_json ?? {})
+    .filter(([, value]) => {
+      if (value == null) {
+        return false;
+      }
+      if (Array.isArray(value)) {
+        return value.length > 0;
+      }
+      if (typeof value === "object") {
+        return Object.keys(value).length > 0;
+      }
+      return String(value).trim() !== "";
+    })
+    .slice(0, 6);
+}
+
+function evidenceLabel(key: string) {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\bml min 1 73m2\b/gi, "mL/min/1.73m2")
+    .replace(/\begfr\b/gi, "eGFR")
+    .replace(/\bhr\b/g, "HR")
+    .replace(/\bbp\b/g, "BP")
+    .replace(/\brass\b/gi, "RASS")
+    .replace(/\b([a-z])/g, (match) => match.toUpperCase());
+}
+
+function evidenceValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(", ");
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${evidenceLabel(key)}: ${String(item)}`)
+      .join(" • ");
+  }
+  return String(value);
+}
+
+function MedicationAlertCard({ medication }: MedicationAlertCardProps) {
+  const evidence = evidenceEntries(medication);
+
+  return (
+    <article className={medicationCardTone(medication.deprescribing_priority_label)}>
+      <header className="medication-alert-header">
+        <div className="medication-alert-title-block">
+          <p className="medication-alert-name">{medication.drug}</p>
+          <p className="medication-alert-meta">{routeDoseFrequencyLine(medication)}</p>
+          <p className="record-subtitle">
+            Séjour {medication.hadm_id} • {medication.admission_type}
+            {medication.starttime ? ` • ${medication.starttime}` : ""}
+            {medication.stoptime ? ` à ${medication.stoptime}` : ""}
+          </p>
+        </div>
+        <div className="medication-alert-score">
+          <span className={scoreBadgeTone(medication.deprescribing_priority_label)}>
+            IPD {medication.deprescribing_priority_score}
+          </span>
+          <span className={riskTone(medication.deprescribing_priority_label)}>
+            {translateRiskLabel(medication.deprescribing_priority_label)}
+          </span>
+        </div>
+      </header>
+
+      <section className="medication-alert-section">
+        <p className="medication-alert-section-title">Alerte signal</p>
+        <p className="medication-alert-copy">{alertSignalText(medication)}</p>
+      </section>
+
+      <section className="medication-alert-section">
+        <p className="medication-alert-section-title">Parce que</p>
+        <p className="medication-alert-copy">{contextualReasonText(medication)}</p>
+      </section>
+
+      {evidence.length > 0 || bucketBreakdownText(medication) ? (
+        <section className="medication-alert-section">
+          <p className="medication-alert-section-title">Éléments contextuels</p>
+          <div className="medication-evidence-list">
+            {evidence.map(([key, value]) => (
+              <span key={key} className="medication-evidence-chip">
+                <strong>{evidenceLabel(key)}:</strong> {evidenceValue(value)}
+              </span>
+            ))}
+            {bucketBreakdownText(medication) ? (
+              <span className="medication-evidence-chip">
+                <strong>Score:</strong> {bucketBreakdownText(medication)}
+              </span>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+function DecisionSupportPanel({
+  title,
+  description,
+  items = [],
+  summary,
+  emptyLabel,
+}: DecisionSupportPanelProps) {
+  const hasContent = Boolean(summary) || items.length > 0;
+
+  return (
+    <section className="details-card decision-support-card">
+      <h2>{title}</h2>
+      {description ? <p className="details-section-copy">{description}</p> : null}
+      {hasContent ? (
+        <>
+          {summary ? <p className="decision-support-summary">{summary}</p> : null}
+          {items.length > 0 ? (
+            <ul className="decision-support-list">
+              {items.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : (
+        <div className="decision-support-empty">
+          <span className="chip chip-neutral">Aide secondaire</span>
+          <p>{emptyLabel}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function RecordDetailsPage() {
+  const { subjectId = "" } = useParams();
+
+  const [record, setRecord] = useState<PatientDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,35 +391,35 @@ export function RecordDetailsPage() {
       setIsLoading(true);
       setError(null);
       try {
-        const nextRecord = await getAdmissionDetail({ subjectId, hadmId });
+        const nextRecord = await getPatientDetail(subjectId);
         setRecord(nextRecord);
       } catch (caughtError) {
         const detail =
           caughtError instanceof Error && caughtError.message
             ? ` Détail: ${caughtError.message}`
             : "";
-        setError(`Impossible de charger l’hospitalisation sélectionnée.${detail}`);
+        setError(`Impossible de charger le dossier patient sélectionné.${detail}`);
       } finally {
         setIsLoading(false);
       }
     }
 
     void loadRecord();
-  }, [hadmId, subjectId]);
+  }, [subjectId]);
 
   return (
     <main className="page-shell">
       <div className="details-header">
         <Link to="/" className="back-link">
-          ← Retour aux hospitalisations
+          ← Retour aux patients
         </Link>
       </div>
 
-      {isLoading ? <section className="state-panel">Chargement de la revue d’hospitalisation...</section> : null}
+      {isLoading ? <section className="state-panel">Chargement du dossier patient...</section> : null}
 
       {!isLoading && error ? (
         <section className="state-panel error-panel">
-          <strong>Impossible de charger la revue d’hospitalisation.</strong>
+          <strong>Impossible de charger le dossier patient.</strong>
           <p>{error}</p>
         </section>
       ) : null}
@@ -80,188 +428,287 @@ export function RecordDetailsPage() {
         <section className="details-layout">
           <article className="details-main">
             <section className="details-hero">
-              <div>
-                <p className="eyebrow">Revue d’hospitalisation</p>
-                <h1>
-                  Patient {record.subject_id} / Admission {record.hadm_id}
-                </h1>
+              <div className="details-hero-copy">
+                <p className="eyebrow">Dossier patient</p>
+                <h1>Dossier {record.patient_summary.subject_id}</h1>
                 <p className="hero-copy">
-                  {record.sex} • Âge {record.age_proxy} ({record.age_group}) •{" "}
-                  {record.admission_type}
+                  {record.left_column_context.sex ?? "Sexe N/D"}
+                  {record.left_column_context.age_proxy != null
+                    ? ` • Âge ${record.left_column_context.age_proxy}`
+                    : ""}
+                  {record.left_column_context.age_group
+                    ? ` (${record.left_column_context.age_group})`
+                    : ""}
                 </p>
+                <p className="dossier-summary">{dossierFlashDiagnostic(record)}</p>
+                {encounterContextLine(record.encounter_summaries) ? (
+                  <p className="record-subtitle">{encounterContextLine(record.encounter_summaries)}</p>
+                ) : null}
               </div>
-              <div className="score-spotlight">
-                <span className="summary-label">Priorité globale</span>
-                <strong>{record.highest_priority_score}</strong>
-                <span className={riskTone(record.highest_priority_label)}>
-                  {translateRiskLabel(record.highest_priority_label)}
-                </span>
-                <span className="score-spotlight-subcopy">
-                  {record.flagged_medication_count} médicament
-                  {record.flagged_medication_count === 1 ? " signalé" : "s signalés"}
-                </span>
+
+              <div className="dossier-hero-metrics">
+                <div className="score-spotlight">
+                  <span className="summary-label">Risque global</span>
+                  <strong>{record.patient_summary.highest_priority_score}</strong>
+                  <span className={riskTone(record.patient_summary.highest_priority_label)}>
+                    {translateRiskLabel(record.patient_summary.highest_priority_label)}
+                  </span>
+                </div>
+
+                <div className="details-stat-card">
+                  <span className="summary-label">Médicaments signalés</span>
+                  <strong>{record.flagged_medication_count}</strong>
+                  <span className="score-spotlight-subcopy">
+                    sur {record.left_column_context.medication_count ?? record.medication_card_count} lignes revues
+                  </span>
+                </div>
+
+                <div className="details-stat-card">
+                  <span className="summary-label">Flash dominant</span>
+                  <strong>{record.top_problem_flashes.length}</strong>
+                  <span className="score-spotlight-subcopy">
+                    {record.top_problem_flashes.length > 0
+                      ? translateProblemFlash(record.top_problem_flashes[0].label)
+                      : "Aucun flash structuré"}
+                  </span>
+                </div>
               </div>
             </section>
 
-            <div className="details-grid">
-              <section className="details-card details-card-wide details-card-emphasis">
-                <h2>Revue recommandée</h2>
-                <p className="details-section-copy">
-                  Médicaments les plus prioritaires à réévaluer en premier pour cette hospitalisation.
-                </p>
-                <div className="medications-list medications-list-priority">
-                  {record.flagged_medications.map((medication) => (
-                    <article
-                      key={`${medication.drug}-${medication.starttime}-priority`}
-                      className="medication-card medication-card-priority"
-                    >
-                      <div className="record-topline">
-                        <div>
-                          <p className="record-title">{medication.drug}</p>
-                          <p className="record-subtitle">
-                            {medication.medication_classes.length > 0
-                              ? medication.medication_classes.map(translateMedicationClass).join(" • ")
-                              : "Revue médicamenteuse"}
-                          </p>
-                        </div>
-                        <span className={riskTone(medication.deprescribing_priority_label)}>
-                          {translateRiskLabel(medication.deprescribing_priority_label)} •{" "}
-                          {medication.deprescribing_priority_score}
-                        </span>
-                      </div>
-                      <p className="medication-explanation">
-                        {medication.deprescribing_priority_summary_alert}
-                      </p>
-                      <p className="medication-explanation">
-                        {translateExplanation(medication.deprescribing_priority_explanation)}
-                      </p>
-                      {bucketBreakdownText(medication) ? (
-                        <p className="record-subtitle">{bucketBreakdownText(medication)}</p>
-                      ) : null}
-                      <div className="chip-row">
-                        {medicationClassBadges(medication).map((label) => (
-                          <span key={label} className="chip chip-neutral">
-                            {label}
-                          </span>
-                        ))}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
+            <div className="dossier-columns">
+              <aside className="details-column details-column-left">
+                <ContextSection
+                  title="Identity & Morphology"
+                  items={[
+                    { label: "ID patient", value: record.patient_summary.subject_id },
+                    {
+                      label: "Âge",
+                      value:
+                        record.left_column_context.age_proxy != null
+                          ? `${record.left_column_context.age_proxy}${
+                              record.left_column_context.age_group
+                                ? ` (${record.left_column_context.age_group})`
+                                : ""
+                            }`
+                          : null,
+                    },
+                    { label: "Sexe", value: record.left_column_context.sex },
+                    {
+                      label: "Poids",
+                      value:
+                        record.left_column_context.latest_weight_kg != null
+                          ? `${record.left_column_context.latest_weight_kg} kg`
+                          : null,
+                      hint: record.left_column_context.latest_weight_provenance ?? "Dernière valeur disponible",
+                    },
+                    {
+                      label: "IMC",
+                      value:
+                        record.left_column_context.latest_bmi != null
+                          ? `${record.left_column_context.latest_bmi}`
+                          : null,
+                      hint: record.left_column_context.latest_bmi_provenance ?? "Dernière valeur disponible",
+                    },
+                  ]}
+                />
 
-              <section className="details-card details-card-wide">
-                <h2>Résumé du score de déprescription</h2>
-                <div className="chip-row">
-                  {translateDriverList(record.overall_priority_drivers).map((driver) => (
-                    <span key={driver} className="chip chip-neutral">
-                      {driver}
-                    </span>
-                  ))}
-                </div>
-                <div className="explanation-panel">
-                  <p className="explanation-heading">Principales règles déclenchées</p>
-                  <ul className="explanation-list">
-                    {translateDriverList(record.score_explanations).map((item) => (
-                      <li key={item}>{item}</li>
+                <ContextSection
+                  title="Clinical Profile / Geriatric Syndromes"
+                  items={[
+                    { label: "Cognition", value: summarizeCognition(record) },
+                    { label: "Risque de chute", value: summarizeFallRisk(record) },
+                    {
+                      label: "Fragilité",
+                      value: yesNoUnavailable(record.left_column_context.frailty_present),
+                    },
+                    {
+                      label: "Risques chroniques",
+                      value: buildChronicRiskLabels(record),
+                    },
+                  ]}
+                />
+
+                <ContextSection
+                  title="Organic Reserve"
+                  items={[
+                    {
+                      label: "Réserve rénale",
+                      value:
+                        record.left_column_context.latest_egfr_ml_min_1_73m2 != null
+                          ? `eGFR ${record.left_column_context.latest_egfr_ml_min_1_73m2}`
+                          : record.left_column_context.latest_creatinine_max != null
+                            ? `Créatinine max ${record.left_column_context.latest_creatinine_max}`
+                            : null,
+                      hint: record.left_column_context.latest_renal_provenance ?? "Dernière valeur disponible",
+                    },
+                    {
+                      label: "Signal hépatique",
+                      value: record.left_column_context.hepatic_signal_summary,
+                    },
+                    {
+                      label: "Potassium",
+                      value: record.left_column_context.baseline_potassium_summary,
+                      hint: record.left_column_context.baseline_potassium_summary ? "Valeur de base ou meilleure valeur disponible" : null,
+                    },
+                    {
+                      label: "Sodium",
+                      value: record.left_column_context.baseline_sodium_summary,
+                      hint: record.left_column_context.baseline_sodium_summary ? "Valeur de base ou meilleure valeur disponible" : null,
+                    },
+                  ]}
+                />
+
+                <ContextSection
+                  title="Live Clinical State"
+                  items={[
+                    {
+                      label: "Vigilance / RASS",
+                      value:
+                        record.left_column_context.rass_summary ??
+                        record.left_column_context.vigilance_summary,
+                    },
+                    {
+                      label: "Douleur",
+                      value: record.left_column_context.pain_summary,
+                    },
+                    {
+                      label: "Stabilité hémodynamique",
+                      value: record.left_column_context.hemodynamic_stability_summary,
+                    },
+                  ]}
+                />
+
+                <ContextSection
+                  title="Goals / Care Philosophy"
+                  items={[
+                    {
+                      label: "Niveau de soins",
+                      value: record.left_column_context.level_of_care,
+                    },
+                    {
+                      label: "Dysphagie",
+                      value: yesNoUnavailable(record.left_column_context.dysphagia_present),
+                    },
+                    {
+                      label: "Voie d’administration / alimentation",
+                      value: record.left_column_context.feeding_route_summary,
+                    },
+                    {
+                      label: "Contraintes d’administration",
+                      value: record.left_column_context.administration_constraints_summary,
+                    },
+                  ]}
+                />
+              </aside>
+
+              <section className="details-column details-column-center">
+                <section className="details-card details-card-emphasis">
+                  <h2>Cartes médicamenteuses Opti-Med</h2>
+                  <p className="details-section-copy">
+                    Workflow principal de revue pharmaco-clinique, classé par IPD décroissant.
+                  </p>
+                  <div className="medications-list medications-list-priority">
+                    {record.ranked_medication_cards.map((medication) => (
+                      <MedicationAlertCard
+                        key={`${medication.hadm_id}-${medication.drug}-${medication.starttime}`}
+                        medication={medication}
+                      />
                     ))}
-                  </ul>
-                </div>
+                  </div>
+                </section>
               </section>
 
-              <section className="details-card">
-                <h2>Vue d’ensemble du patient</h2>
-                <dl className="detail-list">
-                  <div><dt>ID patient</dt><dd>{record.subject_id}</dd></div>
-                  <div><dt>ID admission</dt><dd>{record.hadm_id}</dd></div>
-                  <div><dt>Sexe</dt><dd>{record.sex}</dd></div>
-                  <div><dt>Âge</dt><dd>{record.age_proxy}</dd></div>
-                  <div><dt>Groupe d’âge</dt><dd>{record.age_group}</dd></div>
-                </dl>
-              </section>
+              <aside className="details-column details-column-right">
+                <section className="details-card decision-support-card">
+                  <h2>Rail d’aide à la décision</h2>
+                  <div className="chip-row">
+                    {record.top_problem_flashes.map((flash) => (
+                      <span key={`${flash.key}-${flash.label}`} className={riskTone(flash.severity)}>
+                        {translateProblemFlash(flash.label)}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="explanation-panel">
+                    <ul className="explanation-list">
+                      {record.top_problem_flashes.map((flash) => (
+                        <li key={flash.key}>{problemFlashReason(flash)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </section>
 
-              <section className="details-card">
-                <h2>Détails de l’hospitalisation</h2>
-                <dl className="detail-list">
-                  <div><dt>Type d’admission</dt><dd>{record.admission_type}</dd></div>
-                  <div><dt>Date d’entrée</dt><dd>{record.admittime}</dd></div>
-                  <div><dt>Date de sortie</dt><dd>{record.dischtime}</dd></div>
-                  <div><dt>Durée de séjour</dt><dd>{record.length_of_stay_days.toFixed(1)} jours</dd></div>
-                  <div><dt>Nombre de médicaments</dt><dd>{record.total_medication_count}</dd></div>
-                  <div><dt>Polypharmacie</dt><dd>{record.polypharmacy_flag ? "Oui" : "Non"}</dd></div>
-                </dl>
-              </section>
+                <DecisionSupportPanel
+                  title="Temps jusqu’au bénéfice"
+                  description="Repère d’aide pour mettre en balance bénéfice attendu et risque immédiat."
+                  summary={record.time_to_benefit_summary}
+                  items={record.time_to_benefit_note ? [record.time_to_benefit_note] : []}
+                  emptyLabel="Analyse non encore disponible."
+                />
 
-              <section className="details-card">
-                <h2>Valeurs biologiques</h2>
-                <dl className="detail-list">
-                  <div><dt>Créatinine initiale</dt><dd>{record.creatinine_first ?? "N/D"}</dd></div>
-                  <div><dt>Créatinine max</dt><dd>{record.creatinine_max ?? "N/D"}</dd></div>
-                  <div><dt>Créatinine moyenne</dt><dd>{record.creatinine_mean ?? "N/D"}</dd></div>
-                  <div><dt>Risque rénal</dt><dd>{record.renal_risk_flag ? "Signalé" : "Non"}</dd></div>
-                </dl>
-              </section>
+                <DecisionSupportPanel
+                  title="Taper / protocole de déprescription"
+                  description="Étapes de décroissance ou de sevrage lorsque la recommandation est structurée."
+                  summary={record.taper_protocol_summary}
+                  items={record.taper_protocol_steps ?? []}
+                  emptyLabel="Aucun protocole structuré disponible pour l’instant."
+                />
 
-              <section className="details-card">
-                <h2>Facteurs de risque cliniques</h2>
-                <div className="chip-row">
-                  {record.ckd_flag ? <span className="chip chip-neutral">IRC</span> : null}
-                  {record.dementia_flag ? <span className="chip chip-neutral">Démence</span> : null}
-                  {record.delirium_flag ? <span className="chip chip-neutral">Delirium</span> : null}
-                  {record.heart_failure_flag ? <span className="chip chip-neutral">Insuffisance cardiaque</span> : null}
-                  {record.diabetes_flag ? <span className="chip chip-neutral">Diabète</span> : null}
-                  {record.renal_risk_flag ? <span className="chip chip-neutral">Risque rénal</span> : null}
-                  {record.polypharmacy_flag ? <span className="chip chip-neutral">Polypharmacie</span> : null}
-                </div>
-              </section>
+                <DecisionSupportPanel
+                  title="Validation par les pairs / support de pratique"
+                  description="Zone prévue pour références Beers, STOPP-START ou appuis de consensus."
+                  summary={record.peer_validation_summary}
+                  items={record.peer_validation_references ?? []}
+                  emptyLabel="Support de pratique non encore câblé."
+                />
 
-              <section className="details-card details-card-wide">
-                <h2>Revue médicamenteuse</h2>
-                <p className="details-section-copy">
-                  Liste complète des médicaments de cette hospitalisation, ordonnée par priorité de révision.
-                </p>
-                <div className="medications-list">
-                  {record.medications.map((medication) => (
-                    <article
-                      key={`${medication.drug}-${medication.starttime}`}
-                      className="medication-card"
-                    >
-                      <div className="record-topline">
-                        <div>
-                          <p className="record-title">{medication.drug}</p>
-                          <p className="record-subtitle">
-                            {medication.starttime}
-                            {medication.stoptime ? ` à ${medication.stoptime}` : ""}
-                            {medication.medication_classes.length > 0
-                              ? ` • ${medication.medication_classes.map(translateMedicationClass).join(" • ")}`
-                              : ""}
-                          </p>
-                        </div>
-                        <span className={riskTone(medication.deprescribing_priority_label)}>
-                          {translateRiskLabel(medication.deprescribing_priority_label)} •{" "}
-                          {medication.deprescribing_priority_score}
-                        </span>
-                      </div>
-                      <p className="medication-explanation">
-                        {medication.deprescribing_priority_summary_alert}
-                      </p>
-                      <p className="medication-explanation">
-                        {translateExplanation(medication.deprescribing_priority_explanation)}
-                      </p>
-                      {bucketBreakdownText(medication) ? (
-                        <p className="record-subtitle">{bucketBreakdownText(medication)}</p>
-                      ) : null}
-                      <div className="chip-row">
-                        {medicationClassBadges(medication).map((label) => (
-                          <span key={label} className="chip chip-neutral">
-                            {label}
+                <DecisionSupportPanel
+                  title="Symptômes perçus par le patient"
+                  description="Signaux rapportés par le patient utiles pour contextualiser la révision thérapeutique."
+                  summary={record.patient_symptom_summary}
+                  items={record.patient_perceived_symptoms ?? []}
+                  emptyLabel="Aucun symptôme patient structuré disponible."
+                />
+
+                <section className="details-card decision-support-card">
+                  <h2>Contexte de séjour</h2>
+                  <p className="details-section-copy">
+                    Les séjours restent disponibles comme support clinique secondaire.
+                  </p>
+                  <div className="medications-list encounter-list">
+                    {record.encounter_summaries.map((encounter) => (
+                      <article key={encounter.hadm_id} className="medication-card">
+                        <div className="record-topline">
+                          <div>
+                            <p className="record-title">Séjour {encounter.hadm_id}</p>
+                            <p className="record-subtitle">{encounterSubtitle(encounter)}</p>
+                          </div>
+                          <span className={riskTone(encounter.overall_priority_label)}>
+                            {translateRiskLabel(encounter.overall_priority_label)} •{" "}
+                            {encounter.overall_priority_score}
                           </span>
-                        ))}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
+                        </div>
+                        <div className="metric-grid metric-grid-compact">
+                          <div className="metric-item">
+                            <span className="metric-label">Médicaments</span>
+                            <strong>{encounter.total_medication_count}</strong>
+                          </div>
+                          <div className="metric-item">
+                            <span className="metric-label">Signalés</span>
+                            <strong>{encounter.flagged_medication_count}</strong>
+                          </div>
+                        </div>
+                        <div className="chip-row">
+                          {translateDriverList(encounter.overall_priority_drivers).map((driver) => (
+                            <span key={driver} className="chip chip-neutral">
+                              {driver}
+                            </span>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </aside>
             </div>
           </article>
         </section>
