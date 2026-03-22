@@ -1,6 +1,6 @@
 # OPTI-MED
 
-Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders, a minimal older-adult patient-medication-admission cohort builder, and additive dual-demo discovery for both the Clinical Demo and ED Demo.
+Encounter-relative medication review foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders, a patient-first encounter index, canonical medication-event extraction, encounter-relative current-medication logic, and a local dossier UI/API that separates current medications from prior history.
 
 ## Scope implemented so far
 
@@ -16,10 +16,10 @@ Minimal structured-data foundations for the OPTI-MED MVP. The repo now includes 
 - A minimal cohort builder that joins `patients`, `admissions`, and `prescriptions`
 - Older-adult restriction based on MIMIC-IV `anchor_age`
 - Interim cohort output with one row per medication exposure during an admission
-- A processed cohort builder with diagnosis, creatinine, medication burden, and high-risk medication features
+- A processed cohort builder with diagnosis, creatinine, current-vs-historical medication burden, and high-risk medication features
 - A final rule-based scorer with a numeric score, priority label, and readable explanation per row
-- A minimal FastAPI backend for browsing scored rows locally
-- A lightweight React frontend for browsing scored records and opening a details page
+- A FastAPI backend for browsing scored rows and patient dossiers locally
+- A lightweight React frontend for browsing scored records and opening a patient dossier focused on currently active medications
 
 ## Project structure
 
@@ -101,9 +101,9 @@ export OPTI_MED_SNAPSHOT_STRATEGY=latest_available
 
 Current assumption:
 
-- `OPTI_MED_DATA_ROOT` and `OPTI_MED_CLINICAL_DATA_ROOT` refer to the clinical demo root used by the existing cohort, feature, and scoring pipeline
-- `OPTI_MED_ED_DATA_ROOT` refers to the ED demo root used for discovery and the encounter index
-- the website and scoring flow still run on the clinical-demo-derived medication cohort; ED data is additive groundwork for a later patient-first pipeline
+- `OPTI_MED_DATA_ROOT` and `OPTI_MED_CLINICAL_DATA_ROOT` refer to the clinical demo root used by the cohort, feature, scoring, and dossier pipeline
+- `OPTI_MED_ED_DATA_ROOT` refers to the ED demo root used for ED encounter linkage, reconciliation, Pyxis, triage, and vitals
+- all "current meds" logic is encounter-relative and stays inside the patient’s own shifted MIMIC timeline
 
 Or pass the root path directly on the command line:
 
@@ -213,7 +213,16 @@ The processed output adds:
 
 - diagnosis flags: `ckd_flag`, `dementia_flag`, `delirium_flag`, `heart_failure_flag`, `diabetes_flag`
 - creatinine features: `creatinine_first`, `creatinine_max`, `creatinine_mean`, `renal_risk_flag`
-- medication burden: `total_medication_count`, `polypharmacy_flag`
+- current medication burden:
+  - `current_medication_count`
+  - `current_peak_concurrent_medication_count`
+  - `current_polypharmacy_flag`
+- historical/background medication burden for debugging and analytics:
+  - `historical_medication_count`
+  - `historical_polypharmacy_flag`
+- compatibility aliases:
+  - `total_medication_count` maps to the current encounter-active count
+  - `polypharmacy_flag` maps to the current encounter-active polypharmacy flag
 - high-risk medication flags: `benzodiazepine_flag`, `opioid_flag`, `anticholinergic_flag`, `ppi_flag`, `antipsychotic_flag`
 
 The feature engineering layer now also builds a reusable admission-level patient context object and merges it into the processed cohort. This adds:
@@ -239,6 +248,8 @@ Current guardrails:
 - values are only emitted when supported by the demo data
 - OMR morphology values are taken only from records on or before the encounter end
 - if Cockcroft-Gault cannot be computed because weight is missing, the value remains null and the reason is exposed explicitly
+- medication burden and polypharmacy are computed only from canonical medications that are active at the encounter review timestamp
+- inactive or historical medications are retained separately and do not contribute to the main dossier score
 
 Build the final scored cohort:
 
@@ -358,12 +369,14 @@ Supported snapshot strategies:
 
 Current snapshot behavior:
 
-- snapshot time is selected from encounter timestamps, never from the real-world current clock
+- review time is selected from encounter-local timestamps, never from the real-world current clock
 - active medication logic is explicit and reusable
-- interval-based rows such as `home_medrecon` and `hospital_order` are considered active when their interval overlaps the selected snapshot
+- interval-based rows such as `hospital_order` are considered active when their interval overlaps the selected review timestamp
+- `home_medrecon` is historical by default and is only treated as current when the encounter provides continuation evidence
 - point events such as `ed_pyxis` and `hospital_admin` are treated as active only at their exact event timestamp unless richer duration data is added later
 - the final snapshot deduplicates to one row per `encounter_id` and `medication_normalized`
 - when several active rows map to the same normalized medication, the snapshot keeps the most durable representative row and aggregates provenance flags across all active candidates
+- the API dossier keeps current medications and previous medication history as separate collections
 
 The helper logic for interval overlap, snapshot-time selection, activity checks, and snapshot filtering is intentionally pure and unit-testable.
 
@@ -395,9 +408,16 @@ Available endpoints:
 - `GET /patients`
   - list patient-centered dossier summaries
 - `GET /patients/{subject_id}`
-  - return one patient dossier with encounter summaries, left-column context, ranked medication cards, and top problem flashes
+  - return one patient dossier with:
+    - `review_timestamp`
+    - `current_medications`
+    - `previous_medication_history`
+    - encounter summaries
+    - left-column context
+    - top problem flashes
+  - supports optional `hadm_id` to select a specific encounter
 - `GET /patients/{subject_id}/medications`
-  - return ranked medication cards for one patient
+  - return the current medication cards for one patient
 - `GET /patients/{subject_id}/encounters`
   - return encounter summaries for one patient
 - `GET /scores`
@@ -413,6 +433,14 @@ Available endpoints:
   - return metadata for the latest saved scored output file
 - `POST /scores/refresh`
   - rebuild the scored output and reload it for the API
+
+Fast dossier path:
+
+- the patient dossier endpoint prefers the prebuilt interim artifacts:
+  - `data/interim/encounter_index.csv`
+  - `data/interim/medication_events.csv`
+  - `data/interim/medication_snapshot.csv`
+- this keeps dossier requests fast and avoids rebuilding the full raw medication-review layer on every click
 
 Example requests:
 

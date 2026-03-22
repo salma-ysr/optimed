@@ -32,9 +32,7 @@ from opti_med.api.schemas import (
 )
 from opti_med.config import Settings
 from opti_med.data_access.encounters import EncounterIndexBuilder
-from opti_med.data_access.loaders import MimicDualDemoLoader
 from opti_med.data_access.medication_events import CanonicalMedicationEventBuilder
-from opti_med.data_access.medication_snapshot import build_encounter_medication_review
 from opti_med.data_access.medication_snapshot import build_review_rows_for_encounter
 from opti_med.data_access.medication_snapshot import select_review_timestamp_metadata_for_encounter
 from opti_med.scoring.scorer import DeprescribingPriorityScorer
@@ -401,35 +399,6 @@ def _load_medication_snapshot_dataframe() -> pd.DataFrame:
         dataframe = pd.read_csv(path)
         return dataframe.where(pd.notna(dataframe), None)
     return pd.DataFrame()
-
-
-@lru_cache
-def _load_medication_review_dataframe() -> pd.DataFrame:
-    settings = get_settings()
-    loader = MimicDualDemoLoader(settings)
-    labevents = loader.clinical_loader.load_table("labevents").dataframe
-    triage_loaded = loader.load_optional_ed_table("triage")
-    vitalsign_loaded = loader.load_optional_ed_table("vitalsign")
-    return build_encounter_medication_review(
-        medication_events=_load_medication_events_dataframe(),
-        encounter_index=_load_encounter_index_dataframe(),
-        snapshot_strategy=settings.snapshot_strategy,  # dossier "now" stays encounter-relative.
-        labevents=labevents,
-        triage=triage_loaded.dataframe if triage_loaded else None,
-        vitalsign=vitalsign_loaded.dataframe if vitalsign_loaded else None,
-    )
-
-
-@lru_cache
-def _load_review_signal_tables() -> dict[str, pd.DataFrame | None]:
-    loader = MimicDualDemoLoader(get_settings())
-    triage_loaded = loader.load_optional_ed_table("triage")
-    vitalsign_loaded = loader.load_optional_ed_table("vitalsign")
-    return {
-        "labevents": loader.clinical_loader.load_table("labevents").dataframe,
-        "triage": triage_loaded.dataframe if triage_loaded else None,
-        "vitalsign": vitalsign_loaded.dataframe if vitalsign_loaded else None,
-    }
 
 
 def _clean_record(record: dict) -> dict:
@@ -816,6 +785,8 @@ def _build_dossier_medication_views(
 
 
 def _load_selected_encounter_medication_review(selected_encounter: dict) -> pd.DataFrame:
+    # Compute review status only for the selected encounter. This keeps the dossier fast and
+    # preserves encounter-relative "current meds" semantics without rebuilding the full raw layer.
     medication_events = _load_medication_events_dataframe()
     encounter_events = medication_events.loc[
         medication_events["encounter_id"] == selected_encounter["encounter_id"]
