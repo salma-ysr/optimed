@@ -669,15 +669,17 @@ export function RecordDetailsPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="medications-list medications-list-priority">
-                    {record.ranked_medication_cards.map((medication) => (
-                      <MedicationAlertCard
-                        key={medicationCardId(medication)}
-                        medication={medication}
-                        expanded={expandedMedicationIds.includes(medicationCardId(medication))}
-                        onToggle={() => toggleMedication(medicationCardId(medication))}
-                      />
-                    ))}
+                  <div className="medication-scroll-panel">
+                    <div className="medications-list medications-list-priority">
+                      {record.ranked_medication_cards.map((medication) => (
+                        <MedicationAlertCard
+                          key={medicationCardId(medication)}
+                          medication={medication}
+                          expanded={expandedMedicationIds.includes(medicationCardId(medication))}
+                          onToggle={() => toggleMedication(medicationCardId(medication))}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </section>
               </section>

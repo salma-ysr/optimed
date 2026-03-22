@@ -16,6 +16,7 @@
 body {
   margin: 0;
   min-width: 320px;
+  overflow-y: auto;
 }
 
 a {
@@ -391,13 +392,7 @@ button {
 .details-column {
   display: grid;
   gap: 18px;
-}
-
-.details-column-left,
-.details-column-right {
-  position: sticky;
-  top: 24px;
-  align-self: start;
+  min-width: 0;
 }
 
 .details-card {
@@ -526,6 +521,13 @@ button {
 
 .medications-list-priority {
   margin-top: 16px;
+}
+
+.medication-scroll-panel {
+  margin-top: 12px;
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .medication-list-header {
@@ -735,9 +737,10 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .details-column-left,
-  .details-column-right {
-    position: static;
+  .medication-scroll-panel {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .medication-alert-score {
