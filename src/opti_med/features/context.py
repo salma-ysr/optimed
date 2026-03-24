@@ -1,4 +1,9 @@
-"""Reusable patient context and dynamic signal feature engineering."""
+"""Reusable patient context and dynamic signal feature engineering.
+
+This module remains part of the active saved-artifact path for the current
+rules baseline. It builds admission-level context with explicit provenance, but
+it is not yet the future point-in-time-safe feature store.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,23 @@ from opti_med.features.mappings.diagnoses import (
     DIAGNOSIS_RISK_CATEGORY_GROUPS,
 )
 from opti_med.features.mappings.labs import potassium_itemids, serum_creatinine_itemids, sodium_itemids
+from opti_med.time_semantics.constants import MISSINGNESS_OBSERVED, PROVENANCE_UNAVAILABLE
+
+
+DIAGNOSIS_CONTEXT_PROVENANCE_OBSERVED = "observed_diagnoses_icd"
+ED_DIAGNOSIS_CONTEXT_PROVENANCE_OBSERVED = "observed_ed_diagnosis"
+AGE_PROVENANCE_OBSERVED = "observed_patients_anchor_age"
+SEX_PROVENANCE_OBSERVED = "observed_patients_gender"
+WEIGHT_PROVENANCE_OBSERVED = "observed_omr_weight"
+BMI_PROVENANCE_OBSERVED = "observed_omr_bmi"
+BMI_PROVENANCE_DERIVED = "derived_from_omr_height_weight"
+LAB_PROVENANCE_OBSERVED = "observed_labevents"
+EGFR_PROVENANCE_DERIVED = "derived_ckd_epi_2021_from_creatinine_first"
+COCKCROFT_GAULT_PROVENANCE_DERIVED = (
+    "derived_cockcroft_gault_from_weight_and_creatinine_first"
+)
+ED_SIGNAL_PROVENANCE_OBSERVED = "observed_ed_triage_or_vitalsign"
+ED_TRIAGE_PROVENANCE_OBSERVED = "observed_ed_triage"
 
 
 def build_patient_context_features(
@@ -27,7 +49,11 @@ def build_patient_context_features(
     creatinine_threshold: float,
     serum_creatinine_ids: tuple[int, ...],
 ) -> pd.DataFrame:
-    """Build a reusable admission-level patient context object with provenance."""
+    """Build a reusable admission-level patient context object with provenance.
+
+    TODO(ml-pivot): this is the active saved-artifact path for current scoring. Future review-time
+    feature builders must not assume these admission-level summaries are point-in-time safe.
+    """
     base = admissions.loc[:, ["subject_id", "hadm_id", "admittime", "dischtime"]].copy()
     base["admittime"] = pd.to_datetime(base["admittime"], errors="coerce")
     base["dischtime"] = pd.to_datetime(base["dischtime"], errors="coerce")
@@ -70,8 +96,8 @@ def build_diagnosis_context_features(diagnoses_icd: pd.DataFrame) -> pd.DataFram
         diagnoses_icd,
         key_columns=["subject_id", "hadm_id"],
     )
-    flags["diagnosis_context_provenance"] = "observed_diagnoses_icd"
-    flags["diagnosis_context_missingness"] = "observed"
+    flags["diagnosis_context_provenance"] = DIAGNOSIS_CONTEXT_PROVENANCE_OBSERVED
+    flags["diagnosis_context_missingness"] = MISSINGNESS_OBSERVED
     return flags
 
 
@@ -100,8 +126,8 @@ def build_ed_diagnosis_context_features(
         if column not in {"subject_id", "hadm_id"}
     }
     flags = flags.rename(columns=rename_map)
-    flags["ed_diagnosis_context_provenance"] = "observed_ed_diagnosis"
-    flags["ed_diagnosis_context_missingness"] = "observed"
+    flags["ed_diagnosis_context_provenance"] = ED_DIAGNOSIS_CONTEXT_PROVENANCE_OBSERVED
+    flags["ed_diagnosis_context_missingness"] = MISSINGNESS_OBSERVED
     return flags
 
 
@@ -154,10 +180,10 @@ def build_morphology_features(
     patient_frame = patient_frame.rename(columns={"gender": "sex_context", "anchor_age": "age_context"})
     base = base.merge(patient_frame, how="left", on="subject_id", validate="many_to_one")
     base["age_provenance"] = base["age_context"].notna().map(
-        {True: "observed_patients_anchor_age", False: "unavailable"}
+        {True: AGE_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
     base["sex_provenance"] = base["sex_context"].notna().map(
-        {True: "observed_patients_gender", False: "unavailable"}
+        {True: SEX_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
 
     omr_features = select_baseline_omr_features(admissions=admissions, omr=omr)
@@ -170,13 +196,18 @@ def select_baseline_omr_features(
     admissions: pd.DataFrame,
     omr: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Select the most recent OMR morphology values on or before the encounter end."""
+    """Select the most recent OMR morphology values on or before the encounter end.
+
+    TODO(ml-pivot): this helper is intentionally discharge-capped because it feeds the current
+    rules-era saved artifact. Future review-time feature builders must replace it with a
+    review-time-safe selector instead of reusing it implicitly.
+    """
     base = admissions.loc[:, ["subject_id", "hadm_id", "dischtime"]].copy()
     base["weight_kg"] = pd.NA
-    base["weight_kg_provenance"] = "unavailable"
+    base["weight_kg_provenance"] = PROVENANCE_UNAVAILABLE
     base["weight_kg_unavailable_reason"] = "no_omr_weight_on_or_before_discharge"
     base["bmi"] = pd.NA
-    base["bmi_provenance"] = "unavailable"
+    base["bmi_provenance"] = PROVENANCE_UNAVAILABLE
     base["bmi_unavailable_reason"] = "no_omr_bmi_or_height_weight_on_or_before_discharge"
     base["height_inches_context"] = pd.NA
 
@@ -213,11 +244,11 @@ def select_baseline_omr_features(
             base = base.drop(columns=f"{target_column}_new")
 
     weight_mask = base["weight_kg"].notna()
-    base.loc[weight_mask, "weight_kg_provenance"] = "observed_omr_weight"
+    base.loc[weight_mask, "weight_kg_provenance"] = WEIGHT_PROVENANCE_OBSERVED
     base.loc[weight_mask, "weight_kg_unavailable_reason"] = pd.NA
 
     bmi_observed_mask = base["bmi"].notna()
-    base.loc[bmi_observed_mask, "bmi_provenance"] = "observed_omr_bmi"
+    base.loc[bmi_observed_mask, "bmi_provenance"] = BMI_PROVENANCE_OBSERVED
     base.loc[bmi_observed_mask, "bmi_unavailable_reason"] = pd.NA
 
     bmi_derived_mask = (
@@ -231,7 +262,7 @@ def select_baseline_omr_features(
         pd.to_numeric(base.loc[bmi_derived_mask, "weight_kg"], errors="coerce")
         / (height_m.loc[bmi_derived_mask] ** 2)
     ).round(3)
-    base.loc[bmi_derived_mask, "bmi_provenance"] = "derived_from_omr_height_weight"
+    base.loc[bmi_derived_mask, "bmi_provenance"] = BMI_PROVENANCE_DERIVED
     base.loc[bmi_derived_mask, "bmi_unavailable_reason"] = pd.NA
     return base.drop(columns="dischtime")
 
@@ -271,7 +302,12 @@ def build_dynamic_lab_features(
     sodium_ids: tuple[int, ...],
     creatinine_threshold: float,
 ) -> pd.DataFrame:
-    """Build admission-level lab summaries and dynamic signals."""
+    """Build admission-level lab summaries and dynamic signals.
+
+    TODO(ml-pivot): these summaries intentionally collapse all observed admission labs for the
+    current rules baseline. Future ML feature windows must be rebuilt with explicit review-time
+    constraints instead of reusing this helper directly.
+    """
     base = morphology_features.copy()
     creatinine = summarize_lab_family(labevents, item_ids=creatinine_item_ids, value_name="creatinine")
     potassium = summarize_lab_family(labevents, item_ids=potassium_ids, value_name="potassium")
@@ -294,7 +330,7 @@ def build_dynamic_lab_features(
         axis=1,
     )
     context["egfr_provenance"] = context["egfr_ml_min_1_73m2"].notna().map(
-        {True: "derived_ckd_epi_2021_from_creatinine_first", False: "unavailable"}
+        {True: EGFR_PROVENANCE_DERIVED, False: PROVENANCE_UNAVAILABLE}
     )
     context["egfr_unavailable_reason"] = context.apply(
         lambda row: derive_egfr_unavailable_reason(row), axis=1
@@ -309,7 +345,10 @@ def build_dynamic_lab_features(
         axis=1,
     )
     context["cockcroft_gault_provenance"] = context["cockcroft_gault_ml_min"].notna().map(
-        {True: "derived_cockcroft_gault_from_weight_and_creatinine_first", False: "unavailable"}
+        {
+            True: COCKCROFT_GAULT_PROVENANCE_DERIVED,
+            False: PROVENANCE_UNAVAILABLE,
+        }
     )
     context["cockcroft_gault_unavailable_reason"] = context.apply(
         lambda row: derive_cockcroft_gault_unavailable_reason(row), axis=1
@@ -338,7 +377,11 @@ def summarize_lab_family(
     item_ids: tuple[int, ...],
     value_name: str,
 ) -> pd.DataFrame:
-    """Summarize one lab family to admission-level first/last/min/max/mean and provenance."""
+    """Summarize one lab family to admission-level first/last/min/max/mean and provenance.
+
+    Legacy-active note: this remains correct for the current saved artifact, but it is not a
+    substitute for future point-in-time lab windows.
+    """
     labs = labevents.loc[:, ["hadm_id", "itemid", "charttime", "valuenum"]].copy()
     labs["itemid"] = pd.to_numeric(labs["itemid"], errors="coerce")
     labs["valuenum"] = pd.to_numeric(labs["valuenum"], errors="coerce")
@@ -381,8 +424,8 @@ def summarize_lab_family(
     features[f"{value_name}_trend_direction"] = features[f"{value_name}_delta"].map(
         lambda value: categorize_delta_trend(value)
     )
-    features[f"{value_name}_provenance"] = "observed_labevents"
-    features[f"{value_name}_missingness"] = "observed"
+    features[f"{value_name}_provenance"] = LAB_PROVENANCE_OBSERVED
+    features[f"{value_name}_missingness"] = MISSINGNESS_OBSERVED
     return features
 
 
@@ -392,7 +435,11 @@ def build_dynamic_ed_signal_features(
     triage: pd.DataFrame | None,
     vitalsign: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Build ED-derived hemodynamic and pain summaries linked to admissions."""
+    """Build ED-derived hemodynamic and pain summaries linked to admissions.
+
+    These ED summaries are still admission-linked compatibility features. Future ML work should
+    keep their provenance but rebuild them at review-time-safe windows when needed.
+    """
     base = admissions.loc[:, ["subject_id", "hadm_id"]].drop_duplicates().copy()
     if edstays is None or edstays.empty:
         return _empty_context_frame(["subject_id", "hadm_id"], ed_signal_columns())
@@ -475,16 +522,16 @@ def build_dynamic_ed_signal_features(
     )
     summary = summary.merge(triage_info, how="left", on=["subject_id", "hadm_id"], validate="one_to_one")
     summary["blood_pressure_provenance"] = summary[["sbp_mean", "dbp_mean"]].notna().any(axis=1).map(
-        {True: "observed_ed_triage_or_vitalsign", False: "unavailable"}
+        {True: ED_SIGNAL_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
     summary["heart_rate_provenance"] = summary["heart_rate_mean"].notna().map(
-        {True: "observed_ed_triage_or_vitalsign", False: "unavailable"}
+        {True: ED_SIGNAL_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
     summary["pain_provenance"] = summary["pain_mean"].notna().map(
-        {True: "observed_ed_triage_or_vitalsign", False: "unavailable"}
+        {True: ED_SIGNAL_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
     summary["ed_triage_provenance"] = summary["ed_triage_acuity"].notna().map(
-        {True: "observed_ed_triage", False: "unavailable"}
+        {True: ED_TRIAGE_PROVENANCE_OBSERVED, False: PROVENANCE_UNAVAILABLE}
     )
     return summary
 
@@ -614,7 +661,11 @@ def categorize_delta_trend(value: object) -> str:
 
 
 def fill_context_defaults(dataframe: pd.DataFrame) -> pd.DataFrame:
-    """Fill explicit defaults so 0 can be distinguished from unavailable provenance."""
+    """Fill explicit defaults so 0 can be distinguished from unavailable provenance.
+
+    TODO(ml-pivot): this fill step belongs to the current saved-artifact path. Future feature-store
+    builders should preserve raw missingness signals until the contract-governed export step.
+    """
     output = dataframe.copy()
     int_columns = [
         "ckd_flag",
@@ -642,14 +693,14 @@ def fill_context_defaults(dataframe: pd.DataFrame) -> pd.DataFrame:
             output[column] = output[column].fillna(0).astype(int)
 
     provenance_defaults = {
-        "diagnosis_context_provenance": "unavailable",
-        "diagnosis_context_missingness": "unavailable",
-        "ed_diagnosis_context_provenance": "unavailable",
-        "ed_diagnosis_context_missingness": "unavailable",
-        "blood_pressure_provenance": "unavailable",
-        "heart_rate_provenance": "unavailable",
-        "pain_provenance": "unavailable",
-        "ed_triage_provenance": "unavailable",
+        "diagnosis_context_provenance": PROVENANCE_UNAVAILABLE,
+        "diagnosis_context_missingness": PROVENANCE_UNAVAILABLE,
+        "ed_diagnosis_context_provenance": PROVENANCE_UNAVAILABLE,
+        "ed_diagnosis_context_missingness": PROVENANCE_UNAVAILABLE,
+        "blood_pressure_provenance": PROVENANCE_UNAVAILABLE,
+        "heart_rate_provenance": PROVENANCE_UNAVAILABLE,
+        "pain_provenance": PROVENANCE_UNAVAILABLE,
+        "ed_triage_provenance": PROVENANCE_UNAVAILABLE,
     }
     for column, default_value in provenance_defaults.items():
         if column in output.columns:

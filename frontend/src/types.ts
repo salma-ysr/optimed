@@ -193,6 +193,17 @@ export interface PatientEncounterSummary {
   overall_priority_drivers: string[];
 }
 
+export interface DossierEncounterSelection {
+  encounter_id: string;
+  hadm_id?: number | null;
+  stay_id?: number | null;
+  encounter_source: string;
+  selection_mode: string;
+  requested_hadm_id?: number | null;
+  review_timestamp?: string | null;
+  review_timestamp_source?: string | null;
+}
+
 export interface PatientContextObject {
   sex?: string | null;
   age_proxy?: number | null;
@@ -232,7 +243,9 @@ export interface PatientContextObject {
 
 export interface PatientMedicationCard extends MedicationRowSummary {
   subject_id: number;
+  encounter_id?: string | null;
   hadm_id: number;
+  stay_id?: number | null;
   admission_type: string;
   admittime: string;
   dischtime: string;
@@ -242,19 +255,19 @@ export interface PatientMedicationCard extends MedicationRowSummary {
   last_active_time?: string | null;
   review_timestamp?: string | null;
   review_timestamp_source?: string | null;
+  priority_score_source?: string | null;
+  // Reserved for future ML output. These remain undefined in the current rule-based dossier.
+  ml_priority_score?: number | null;
+  ml_priority_rank_within_encounter?: number | null;
+  ml_top_drivers?: string[] | null;
+  ml_driver_raw_values?: Record<string, unknown> | null;
+  guidance_summary?: string | null;
 }
 
 export interface PatientDetailResponse {
   patient_summary: PatientSummary;
   encounter_summaries: PatientEncounterSummary[];
-  selected_encounter?: {
-    encounter_id: string;
-    hadm_id?: number | null;
-    stay_id?: number | null;
-    encounter_source: string;
-    review_timestamp?: string | null;
-    review_timestamp_source?: string | null;
-  } | null;
+  selected_encounter?: DossierEncounterSelection | null;
   review_timestamp?: string | null;
   current_medication_count?: number | null;
   current_flagged_medication_count?: number | null;
@@ -267,6 +280,7 @@ export interface PatientDetailResponse {
   top_problem_flashes: ProblemFlash[];
   flagged_medication_count: number;
   medication_card_count: number;
+  // Explicit placeholder-only sections in the current dossier contract.
   time_to_benefit_summary?: string | null;
   time_to_benefit_note?: string | null;
   taper_protocol_steps?: string[] | null;

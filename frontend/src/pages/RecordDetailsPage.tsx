@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { getPatientDetail } from "../api/client";
 import type {
   PatientDetailResponse,
@@ -69,6 +69,19 @@ function encounterSubtitle(encounter: PatientEncounterSummary) {
   return parts.join(" • ");
 }
 
+function selectedEncounterSummary(record: PatientDetailResponse) {
+  const selectedHadmId = record.selected_encounter?.hadm_id;
+  if (selectedHadmId != null) {
+    const matchedEncounter = record.encounter_summaries.find(
+      (encounter) => encounter.hadm_id === selectedHadmId,
+    );
+    if (matchedEncounter) {
+      return matchedEncounter;
+    }
+  }
+  return record.encounter_summaries[0] ?? null;
+}
+
 function problemFlashReason(flash: ProblemFlash) {
   const translated = translateProblemFlash(flash.label);
   return `${translated} · ${flash.reason}`;
@@ -88,12 +101,16 @@ function dossierFlashDiagnostic(record: PatientDetailResponse) {
   return "Profil sans signal majeur structuré pour le moment.";
 }
 
-function encounterContextLine(encounters: PatientEncounterSummary[]) {
-  const latestEncounter = encounters[0];
-  if (!latestEncounter) {
+function encounterContextLine(record: PatientDetailResponse) {
+  const encounter = selectedEncounterSummary(record);
+  if (!encounter) {
     return null;
   }
-  return `Contexte récent : séjour ${latestEncounter.hadm_id} • ${encounterSubtitle(latestEncounter)}`;
+  const prefix =
+    record.selected_encounter?.selection_mode === "requested_hadm_id"
+      ? "Contexte sélectionné"
+      : "Contexte récent";
+  return `${prefix} : séjour ${encounter.hadm_id} • ${encounterSubtitle(encounter)}`;
 }
 
 function formatValue(value: string | number | null | undefined) {
@@ -292,7 +309,7 @@ function evidenceValue(value: unknown) {
 }
 
 function medicationCardId(medication: PatientMedicationCard) {
-  return `${medication.hadm_id}-${medication.drug}-${medication.starttime}`;
+  return `${medication.encounter_id ?? medication.hadm_id}-${medication.drug}-${medication.starttime}`;
 }
 
 function currentMedicationCards(record: PatientDetailResponse) {
@@ -441,6 +458,10 @@ function DecisionSupportPanel({
 
 export function RecordDetailsPage() {
   const { subjectId = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const selectedHadmIdParam = searchParams.get("hadm_id");
+  const selectedHadmId =
+    selectedHadmIdParam && /^\d+$/.test(selectedHadmIdParam) ? Number(selectedHadmIdParam) : null;
 
   const [record, setRecord] = useState<PatientDetailResponse | null>(null);
   const [expandedMedicationIds, setExpandedMedicationIds] = useState<string[]>([]);
@@ -452,7 +473,7 @@ export function RecordDetailsPage() {
       setIsLoading(true);
       setError(null);
       try {
-        const nextRecord = await getPatientDetail(subjectId);
+        const nextRecord = await getPatientDetail(subjectId, { hadmId: selectedHadmId });
         setRecord(nextRecord);
         setExpandedMedicationIds([]);
       } catch (caughtError) {
@@ -467,7 +488,7 @@ export function RecordDetailsPage() {
     }
 
     void loadRecord();
-  }, [subjectId]);
+  }, [selectedHadmId, subjectId]);
 
   function toggleMedication(cardId: string) {
     setExpandedMedicationIds((current) =>
@@ -534,8 +555,8 @@ export function RecordDetailsPage() {
                     : ""}
                 </p>
                 <p className="dossier-summary">{dossierFlashDiagnostic(record)}</p>
-                {encounterContextLine(record.encounter_summaries) ? (
-                  <p className="record-subtitle">{encounterContextLine(record.encounter_summaries)}</p>
+                {encounterContextLine(record) ? (
+                  <p className="record-subtitle">{encounterContextLine(record)}</p>
                 ) : null}
               </div>
 

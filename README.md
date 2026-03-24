@@ -1,6 +1,6 @@
 # OPTI-MED
 
-Encounter-relative medication review foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders, a patient-first encounter index, canonical medication-event extraction, encounter-relative current-medication logic, and a local dossier UI/API that separates current medications from prior history.
+Encounter-relative medication review foundations for the OPTI-MED MVP. The repo now includes configurable MIMIC-IV loaders, a patient-first encounter index, canonical medication-event extraction, encounter-relative current-medication logic, and a local dossier UI/API that separates current medications from prior history. The active scorer remains an admission-row, rule-based benchmark.
 
 ## Scope implemented so far
 
@@ -312,7 +312,7 @@ Current encounter-index behavior:
 - unmatched inpatient admissions remain as `hospital_only`
 - unmatched ED stays remain as `ed_only`
 
-This is additive scaffolding for a future patient-first pipeline. The existing API and frontend still consume the admission-first scored medication dataset.
+This is partial patient-first scaffolding, not a replacement for the current scored benchmark. The score list and admission summaries still come from the saved admission-row scored dataset, while dossier encounter selection now reuses the encounter index.
 
 ## Medication Events
 
@@ -347,7 +347,10 @@ Key properties of the current implementation:
   - `continued_from_home_inferred`
   - `newly_started_during_encounter_inferred`
 
-The current website does not use `medication_events` yet. The existing scoring pipeline still runs from the clinical-demo prescription cohort while this new unified layer prepares the patient-first medication history workflow.
+The scorer does not read the saved `medication_events.csv` artifact, but the medication-event layer is already reused today:
+
+- the scorer rebuilds medication events in memory to decide which cohort medications are current at encounter review time and to compute historical burden
+- the API dossier prefers the saved `medication_events.csv` artifact when present, otherwise it rebuilds the layer on demand
 
 ## Medication Snapshot
 
@@ -379,6 +382,8 @@ Current snapshot behavior:
 - the API dossier keeps current medications and previous medication history as separate collections
 
 The helper logic for interval overlap, snapshot-time selection, activity checks, and snapshot filtering is intentionally pure and unit-testable.
+
+The scorer reuses this encounter-review logic in process, but it does not read the saved `medication_snapshot.csv` artifact. The API dossier uses the saved snapshot as an accelerator when present and otherwise recomputes selected-encounter review rows.
 
 ## Backend API
 
@@ -441,6 +446,7 @@ Fast dossier path:
   - `data/interim/medication_events.csv`
   - `data/interim/medication_snapshot.csv`
 - this keeps dossier requests fast and avoids rebuilding the full raw medication-review layer on every click
+- list and admission-summary endpoints still read from `data/final/older_adult_medication_scores.csv`
 
 Example requests:
 
@@ -486,9 +492,11 @@ VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 Frontend pages in this phase:
 
 - `/`
-  - admission-level medication risk review dashboard
+  - patient-centered dashboard backed by `/patients`
+- `/patients/:subjectId`
+  - patient dossier showing current medications, previous medication history, encounter summaries, and reused rule-based score details when a scored row exists
 - `/records/:subjectId/:hadmId`
-  - admission-centric review page with recommended review medications, full medication list, labs, risk factors, and score explanation
+  - legacy route alias that renders the same dossier component
 
 Recommended local workflow:
 
@@ -505,4 +513,5 @@ npm run dev
 ## Notes
 
 - This repo still does not implement downstream modeling.
+- The current rule-based scorer remains the benchmark and fallback while the patient-first medication-history path continues to mature.
 - The loaders are intentionally simple so later phases can extend them without rewriting path or schema logic.

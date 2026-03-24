@@ -1,4 +1,10 @@
-"""Minimal feature extraction pipeline for the OPTI-MED MVP."""
+"""Minimal feature extraction pipeline for the OPTI-MED MVP.
+
+This module remains the active feature-building path for the saved scored
+artifact used by the current rule engine and app. It is not the future
+encounter-medication-state feature store, even though some helpers now derive
+encounter-relative medication notions from the snapshot/review artifact.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ from opti_med.features.context import build_patient_context_features
 from opti_med.features.mappings.diagnoses import DIAGNOSIS_ICD_PREFIXES
 from opti_med.features.mappings.labs import serum_creatinine_itemids
 from opti_med.features.mappings.medications import HIGH_RISK_MEDICATION_KEYWORDS
+from opti_med.time_semantics.constants import MEDICATION_STATUS_ACTIVE_AT_REVIEW
 
 
 @dataclass(frozen=True)
@@ -29,7 +36,11 @@ class FeatureBuildResult:
 
 
 class MinimalFeatureBuilder:
-    """Enrich the admission-medication cohort with MVP diagnosis, lab, and medication features."""
+    """Enrich the admission-medication cohort with MVP diagnosis, lab, and medication features.
+
+    TODO(ml-pivot): keep this builder behaviorally stable for the rules baseline, but do not
+    treat its output shape as the target ML feature store contract.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -104,7 +115,11 @@ class MinimalFeatureBuilder:
 
 
 def build_diagnosis_flags(diagnoses: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate diagnosis flags to the admission level using curated ICD prefixes."""
+    """Aggregate diagnosis flags to the admission level using curated ICD prefixes.
+
+    Legacy helper retained for backward compatibility. The active reusable diagnosis-flag path
+    now lives in `features/context.py` via `build_diagnosis_flags_by_key`.
+    """
     diagnoses_frame = diagnoses.loc[:, ["hadm_id", "icd_code", "icd_version"]].copy()
     diagnoses_frame["icd_code"] = diagnoses_frame["icd_code"].astype(str).str.upper()
     diagnoses_frame["icd_version"] = pd.to_numeric(
@@ -126,7 +141,11 @@ def build_diagnosis_flags(diagnoses: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_creatinine_features(labevents: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """Aggregate serum creatinine values to the admission level."""
+    """Aggregate serum creatinine values to the admission level.
+
+    Legacy admission-level helper retained for compatibility. The active saved-artifact path now
+    derives richer lab context in `features/context.py`.
+    """
     creatinine_itemids = serum_creatinine_itemids(settings)
     labs = labevents.loc[:, ["hadm_id", "itemid", "charttime", "valuenum"]].copy()
     labs = labs.dropna(subset=["hadm_id", "itemid", "valuenum"])
@@ -165,12 +184,17 @@ def filter_cohort_to_current_medications(
     cohort: pd.DataFrame,
     medication_review: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Keep only canonical cohort rows that are active at the encounter review timestamp."""
+    """Keep only canonical cohort rows that are active at the encounter review timestamp.
+
+    TODO(ml-pivot): "current" here means active in the saved encounter-review artifact, not
+    active in a dedicated encounter-medication-state table. This bridge stays in place because
+    the scorer still consumes the older cohort-shaped CSV output.
+    """
     if cohort.empty or medication_review.empty:
         return cohort.iloc[0:0].copy()
 
     active_review = medication_review.loc[
-        medication_review["medication_status"] == "active_at_review_time",
+        medication_review["medication_status"] == MEDICATION_STATUS_ACTIVE_AT_REVIEW,
         ["hadm_id", "medication_normalized", "review_timestamp", "review_timestamp_source"],
     ].dropna(subset=["hadm_id", "medication_normalized"]).copy()
     if active_review.empty:
@@ -199,7 +223,16 @@ def build_medication_burden_features(
     settings: Settings,
     medication_review: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Aggregate current-vs-historical medication burden from canonical medication episodes."""
+    """Aggregate current-vs-historical medication burden from canonical medication episodes.
+
+    Active path note:
+    - `current_*` columns are encounter-review-relative.
+    - compatibility fields such as `total_medication_count` still exist because the current rule
+      scorer and saved artifacts expect them.
+
+    TODO(ml-pivot): future ML features should come from the explicit feature-store/state
+    contracts instead of extending these legacy compatibility names.
+    """
     if current_cohort.empty:
         return pd.DataFrame(
             columns=[
@@ -262,6 +295,7 @@ def _historical_medication_burden_from_review(
     medication_review: pd.DataFrame,
     settings: Settings,
 ) -> pd.DataFrame:
+    """Count all encounter-review medications for backward-compatible historical burden fields."""
     review = medication_review.loc[medication_review["hadm_id"].notna()].copy()
     if review.empty:
         return pd.DataFrame(columns=["hadm_id", "historical_medication_count", "historical_polypharmacy_flag"])

@@ -36,6 +36,10 @@ from opti_med.data_access.medication_events import CanonicalMedicationEventBuild
 from opti_med.data_access.medication_snapshot import build_review_rows_for_encounter
 from opti_med.data_access.medication_snapshot import select_review_timestamp_metadata_for_encounter
 from opti_med.scoring.scorer import DeprescribingPriorityScorer
+from opti_med.time_semantics.constants import (
+    MEDICATION_STATUS_ACTIVE_AT_REVIEW,
+    REVIEW_TIMESTAMP_SOURCE_PREBUILT_SNAPSHOT,
+)
 
 
 def create_app() -> FastAPI:
@@ -269,7 +273,10 @@ def create_app() -> FastAPI:
         context_rows = encounter_rows if not encounter_rows.empty else patient_rows
         patient_summary = _build_patient_summary(patient_rows)
         encounter_summaries = _build_patient_encounter_summaries(patient_rows)
-        dossier_selection = _build_dossier_encounter_selection(selected_encounter)
+        dossier_selection = _build_dossier_encounter_selection(
+            selected_encounter,
+            requested_hadm_id=hadm_id,
+        )
         return PatientDetailResponse(
             patient_summary=patient_summary,
             encounter_summaries=encounter_summaries,
@@ -553,6 +560,15 @@ def _patient_summary_dict(patient_rows: pd.DataFrame) -> dict:
         ascending=[False, True, True, True],
     ).reset_index(drop=True)
     top_row = sorted_rows.iloc[0].to_dict()
+    latest_rows = (
+        patient_rows.assign(
+            _latest_dischtime=pd.to_datetime(patient_rows["dischtime"], errors="coerce"),
+            _latest_admittime=pd.to_datetime(patient_rows["admittime"], errors="coerce"),
+        )
+        .sort_values(["_latest_dischtime", "_latest_admittime"], ascending=[False, False], na_position="last")
+        .reset_index(drop=True)
+    )
+    latest_row = latest_rows.iloc[0].to_dict()
     flagged_count = int(
         patient_rows["deprescribing_priority_label"].isin(["medium", "high"]).sum()
     )
@@ -574,6 +590,21 @@ def _patient_summary_dict(patient_rows: pd.DataFrame) -> dict:
         "highest_priority_score": int(top_row["deprescribing_priority_score"]),
         "highest_priority_label": str(top_row["deprescribing_priority_label"]),
         "top_problem_flashes": [flash.label for flash in _build_problem_flashes(patient_rows)],
+        "latest_hadm_id": (
+            int(latest_row["hadm_id"])
+            if latest_row.get("hadm_id") is not None and pd.notna(latest_row.get("hadm_id"))
+            else None
+        ),
+        "latest_admission_type": (
+            str(latest_row["admission_type"])
+            if latest_row.get("admission_type") is not None and pd.notna(latest_row.get("admission_type"))
+            else None
+        ),
+        "latest_dischtime": (
+            str(latest_row["dischtime"])
+            if latest_row.get("dischtime") is not None and pd.notna(latest_row.get("dischtime"))
+            else None
+        ),
     }
 
 
@@ -719,7 +750,11 @@ def _select_dossier_encounter(subject_id: int, hadm_id: int | None) -> dict:
     return patient_encounters.iloc[0].drop(labels=["encounter_sort_time"]).to_dict()
 
 
-def _build_dossier_encounter_selection(selected_encounter: dict) -> DossierEncounterSelection:
+def _build_dossier_encounter_selection(
+    selected_encounter: dict,
+    *,
+    requested_hadm_id: int | None,
+) -> DossierEncounterSelection:
     snapshot_rows = _load_medication_snapshot_dataframe()
     encounter_snapshot = snapshot_rows.loc[
         snapshot_rows["encounter_id"] == selected_encounter["encounter_id"]
@@ -754,6 +789,10 @@ def _build_dossier_encounter_selection(selected_encounter: dict) -> DossierEncou
             else None
         ),
         encounter_source=str(selected_encounter["encounter_source"]),
+        selection_mode=(
+            "requested_hadm_id" if requested_hadm_id is not None else "latest_available_encounter"
+        ),
+        requested_hadm_id=requested_hadm_id,
         review_timestamp=review_timestamp,
         review_timestamp_source=review_timestamp_source,
     )
@@ -770,10 +809,10 @@ def _build_dossier_medication_views(
         return [], [], 0
 
     current_review = encounter_review.loc[
-        encounter_review["medication_status"] == "active_at_review_time"
+        encounter_review["medication_status"] == MEDICATION_STATUS_ACTIVE_AT_REVIEW
     ].copy()
     history_review = encounter_review.loc[
-        encounter_review["medication_status"] != "active_at_review_time"
+        encounter_review["medication_status"] != MEDICATION_STATUS_ACTIVE_AT_REVIEW
     ].copy()
 
     current_cards = _build_review_medication_cards(current_review, scored_rows, selected_encounter)
@@ -801,7 +840,9 @@ def _load_selected_encounter_medication_review(selected_encounter: dict) -> pd.D
     if not encounter_snapshot.empty:
         first_row = encounter_snapshot.iloc[0].to_dict()
         review_timestamp = first_row.get("review_timestamp") or first_row.get("snapshot_time")
-        review_timestamp_source = str(first_row.get("review_timestamp_source") or "prebuilt_snapshot")
+        review_timestamp_source = str(
+            first_row.get("review_timestamp_source") or REVIEW_TIMESTAMP_SOURCE_PREBUILT_SNAPSHOT
+        )
     else:
         review_value, review_source = select_review_timestamp_metadata_for_encounter(
             selected_encounter,
@@ -837,6 +878,9 @@ def _build_review_medication_cards(
         na_position="last",
     ).reset_index(drop=True)
     for review_row in ranked_review.to_dict(orient="records"):
+        # TODO(ml-pivot): These dossier cards are keyed by encounter-relative review rows, but the
+        # displayed rule score still comes from the saved admission-first scored output via string
+        # matching. Future model output must attach separately to a dedicated review-time row.
         score_record = _best_scored_match_for_review(review_row, scored_rows)
         cards.append(_build_review_medication_card(review_row, selected_encounter, score_record))
 
@@ -878,12 +922,18 @@ def _build_review_medication_card(
 ) -> PatientMedicationCard:
     base_record = {
         "subject_id": int(review_row["subject_id"]),
+        "encounter_id": str(selected_encounter["encounter_id"]),
         "hadm_id": (
             int(review_row["hadm_id"])
             if review_row.get("hadm_id") is not None and pd.notna(review_row.get("hadm_id"))
             else int(selected_encounter["hadm_id"])
             if selected_encounter.get("hadm_id") is not None and pd.notna(selected_encounter.get("hadm_id"))
             else 0
+        ),
+        "stay_id": (
+            int(selected_encounter["stay_id"])
+            if selected_encounter.get("stay_id") is not None and pd.notna(selected_encounter.get("stay_id"))
+            else None
         ),
         "admission_type": str(selected_encounter.get("admission_type") or "unknown"),
         "admittime": str(selected_encounter.get("admittime") or ""),
@@ -926,6 +976,11 @@ def _build_review_medication_card(
         "last_active_time": review_row.get("last_active_time"),
         "review_timestamp": review_row.get("review_timestamp"),
         "review_timestamp_source": review_row.get("review_timestamp_source"),
+        "priority_score_source": (
+            "admission_first_scored_output_match"
+            if score_record is not None
+            else "no_scored_match_for_review_medication"
+        ),
     }
     return PatientMedicationCard(**_clean_record(base_record))
 

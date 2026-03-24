@@ -16,9 +16,23 @@ import pandas as pd
 from opti_med.config import Settings
 from opti_med.data_access.encounters import EncounterIndexBuilder
 from opti_med.data_access.medication_events import CanonicalMedicationEventBuilder
+from opti_med.time_semantics.constants import (
+    MEDICATION_STATUS_ACTIVE_AT_REVIEW,
+    MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW,
+    MEDICATION_STATUS_INACTIVE_BEFORE_REVIEW,
+    MEDICATION_STATUS_PRE_ADMISSION_ONLY,
+    REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_BOUNDARY,
+    REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_END,
+    REVIEW_TIMESTAMP_SOURCE_LAB,
+    REVIEW_TIMESTAMP_SOURCE_MEDICATION_ADMINISTRATION,
+    REVIEW_TIMESTAMP_SOURCE_MEDICATION_ORDER,
+    REVIEW_TIMESTAMP_SOURCE_VITALS,
+)
 
 
 SnapshotStrategy = Literal["ed", "hospital", "latest_available"]
+# Keep this type-level literal set aligned with the shared runtime labels in
+# `opti_med.time_semantics.constants`.
 MedicationReviewStatus = Literal[
     "active_at_review_time",
     "inactive_before_review_time",
@@ -188,17 +202,32 @@ def select_review_timestamp_metadata_for_encounter(
     row = encounter_row if isinstance(encounter_row, dict) else encounter_row.to_dict()
     if strategy == "latest_available":
         priority_candidates = [
-            ("medication_administration", _latest_medication_administration_timestamp(row, medication_events)),
-            ("medication_order", _latest_medication_order_timestamp(row, medication_events)),
-            ("lab", _latest_lab_timestamp(row, labevents)),
-            ("vitals", _latest_vitals_timestamp(row, triage=triage, vitalsign=vitalsign)),
-            ("encounter_end", _latest_encounter_boundary_timestamp(row)),
+            (
+                REVIEW_TIMESTAMP_SOURCE_MEDICATION_ADMINISTRATION,
+                _latest_medication_administration_timestamp(row, medication_events),
+            ),
+            (
+                REVIEW_TIMESTAMP_SOURCE_MEDICATION_ORDER,
+                _latest_medication_order_timestamp(row, medication_events),
+            ),
+            (REVIEW_TIMESTAMP_SOURCE_LAB, _latest_lab_timestamp(row, labevents)),
+            (
+                REVIEW_TIMESTAMP_SOURCE_VITALS,
+                _latest_vitals_timestamp(row, triage=triage, vitalsign=vitalsign),
+            ),
+            (
+                REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_END,
+                _latest_encounter_boundary_timestamp(row),
+            ),
         ]
         for source_name, candidate in priority_candidates:
             if pd.notna(candidate):
                 return candidate, source_name
 
-    return select_review_timestamp_for_encounter(row, strategy=strategy), "encounter_boundary"
+    return (
+        select_review_timestamp_for_encounter(row, strategy=strategy),
+        REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_BOUNDARY,
+    )
 
 
 def first_valid_timestamp(values: list[pd.Timestamp | pd.NaT]) -> pd.Timestamp | pd.NaT:
@@ -309,6 +338,9 @@ def build_medication_snapshot(
     vitalsign: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build a deduplicated encounter-relative current-medication snapshot."""
+    # The saved snapshot artifact is the active source for dossier-style "current medication"
+    # views. Future encounter-medication-state builders should target the dedicated state
+    # interface instead of extending this backward-compatible CSV shape.
     review = build_encounter_medication_review(
         medication_events=medication_events,
         encounter_index=encounter_index,
@@ -319,7 +351,9 @@ def build_medication_snapshot(
     )
     if review.empty:
         return pd.DataFrame(columns=MEDICATION_SNAPSHOT_COLUMNS)
-    snapshot = review.loc[review["medication_status"] == "active_at_review_time"].copy()
+    snapshot = review.loc[
+        review["medication_status"] == MEDICATION_STATUS_ACTIVE_AT_REVIEW
+    ].copy()
     if snapshot.empty:
         return pd.DataFrame(columns=MEDICATION_SNAPSHOT_COLUMNS)
     snapshot["snapshot_time"] = snapshot["review_timestamp"]
@@ -335,7 +369,12 @@ def build_encounter_medication_review(
     triage: pd.DataFrame | None = None,
     vitalsign: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Build one row per encounter medication with status at the review timestamp."""
+    """Build one row per encounter medication with status at the review timestamp.
+
+    This is the active saved-artifact path for encounter-relative medication review. It
+    predates the future encounter-medication-state interface and therefore still returns a
+    backward-compatible CSV-oriented shape.
+    """
     if medication_events.empty or encounter_index.empty:
         return pd.DataFrame(columns=MEDICATION_REVIEW_COLUMNS)
 
@@ -463,16 +502,16 @@ def classify_medication_status_at_review_time(
 ) -> MedicationReviewStatus:
     """Classify one encounter medication relative to the encounter review timestamp."""
     if medication_group.empty:
-        return "activity_uncertain_at_review_time"
+        return MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW
 
     active_events = filter_active_medication_events(medication_group, review_timestamp)
     active_non_home = active_events.loc[active_events["source_home_medrecon"] != 1]
     if not active_non_home.empty:
-        return "active_at_review_time"
+        return MEDICATION_STATUS_ACTIVE_AT_REVIEW
 
     has_non_home = bool((medication_group["source_home_medrecon"] != 1).any())
     if not has_non_home:
-        return "pre_admission_only"
+        return MEDICATION_STATUS_PRE_ADMISSION_ONLY
 
     latest_non_home_stop = latest_valid_timestamp(
         [
@@ -491,8 +530,8 @@ def classify_medication_status_at_review_time(
     )
     review = pd.to_datetime(review_timestamp, errors="coerce")
     if pd.notna(review) and pd.notna(latest_non_home_time) and latest_non_home_time < review:
-        return "inactive_before_review_time"
-    return "activity_uncertain_at_review_time"
+        return MEDICATION_STATUS_INACTIVE_BEFORE_REVIEW
+    return MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW
 
 
 def deduplicate_active_medication_group(group: pd.DataFrame) -> pd.Series:

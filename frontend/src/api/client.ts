@@ -44,8 +44,17 @@ export function getPatientSummaries(params?: {
   return apiRequest<PatientSummariesResponse>(`/patients?${query.toString()}`);
 }
 
-export function getPatientDetail(subjectId: string): Promise<PatientDetailResponse> {
-  return apiRequest<PatientDetailResponse>(`/patients/${subjectId}`);
+export function getPatientDetail(
+  subjectId: string,
+  options?: { hadmId?: number | string | null },
+): Promise<PatientDetailResponse> {
+  const query = new URLSearchParams();
+  if (options?.hadmId != null && options.hadmId !== "") {
+    query.set("hadm_id", String(options.hadmId));
+  }
+  const queryString = query.toString();
+  const suffix = queryString ? `?${queryString}` : "";
+  return apiRequest<PatientDetailResponse>(`/patients/${subjectId}${suffix}`);
 }
 
 export function getLatestScoredOutput(): Promise<ScoredOutputSummary> {
