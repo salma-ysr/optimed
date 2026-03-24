@@ -14,3 +14,10 @@ frontend/dist/*
 
 # mac
 .DS_Store
+
+#docs
+docs/*
+
+#egg-info
+*.egg-info/
+
