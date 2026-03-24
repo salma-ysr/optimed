@@ -16,6 +16,7 @@ import pandas as pd
 from opti_med.config import Settings
 from opti_med.data_access.encounters import EncounterIndexBuilder
 from opti_med.data_access.medication_events import CanonicalMedicationEventBuilder
+from opti_med.standardized import StandardizedParquetRepository
 from opti_med.time_semantics.constants import (
     MEDICATION_STATUS_ACTIVE_AT_REVIEW,
     MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW,
@@ -96,18 +97,17 @@ class MedicationSnapshotBuilder:
         self.snapshot_strategy = validate_snapshot_strategy(
             snapshot_strategy or settings.snapshot_strategy
         )
+        self.repository = StandardizedParquetRepository(settings)
         self.encounter_builder = EncounterIndexBuilder(settings)
         self.medication_event_builder = CanonicalMedicationEventBuilder(settings)
 
     def build(self) -> pd.DataFrame:
         """Build the medication snapshot using the configured encounter-relative strategy."""
         encounter_index = self.encounter_builder.build()
-        medication_events = self.medication_event_builder.build()
-        clinical_loader = self.medication_event_builder.loader.clinical_loader
-        dual_loader = self.medication_event_builder.loader
-        labevents_loaded = clinical_loader.load_table("labevents")
-        triage_loaded = dual_loader.load_optional_ed_table("triage")
-        vitalsign_loaded = dual_loader.load_optional_ed_table("vitalsign")
+        medication_events = self.medication_event_builder.build(encounter_index=encounter_index)
+        labevents_loaded = self.repository.load_source_table("clinical", "labevents")
+        triage_loaded = self.repository.load_optional_source_table("ed", "triage")
+        vitalsign_loaded = self.repository.load_optional_source_table("ed", "vitalsign")
         return build_medication_snapshot(
             medication_events=medication_events,
             encounter_index=encounter_index,

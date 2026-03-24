@@ -69,8 +69,13 @@ class EncounterMedicationStateRow:
     review_timestamp_source: str | None = None
     medication_raw: str | None = None
     medication_normalized: str | None = None
-    # TODO(ml-pivot): make required once medication standardization exists.
     medication_standardized: str | None = None
+    medication_standardized_source: str | None = None
+    rxnorm_rxcui: str | None = None
+    ingredient_standardized: str | None = None
+    ingredient_resolution_status: str | None = None
+    mapping_confidence: str | None = None
+    ambiguous_mapping_flag: bool = False
     # TODO(ml-pivot): populate once medication class standardization exists.
     medication_class_standardized: str | None = None
     medication_status_at_review: MedicationStatusAtReview | None = None

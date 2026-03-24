@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from datetime import date, datetime
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
@@ -383,7 +384,7 @@ def _load_encounter_index_dataframe() -> pd.DataFrame:
     settings = get_settings()
     path = settings.encounter_index_output_path
     if path.exists():
-        dataframe = pd.read_csv(path)
+        dataframe = pd.read_parquet(path)
         return dataframe.where(pd.notna(dataframe), None)
     return EncounterIndexBuilder(settings).build()
 
@@ -393,7 +394,7 @@ def _load_medication_events_dataframe() -> pd.DataFrame:
     settings = get_settings()
     path = settings.medication_events_output_path
     if path.exists():
-        dataframe = pd.read_csv(path)
+        dataframe = pd.read_parquet(path)
         return dataframe.where(pd.notna(dataframe), None)
     return CanonicalMedicationEventBuilder(settings).build()
 
@@ -422,6 +423,12 @@ def _normalize_value(value: object) -> object:
         return value
     if isinstance(value, tuple):
         return list(value)
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
     if value is None:
         return None
     if pd.isna(value):

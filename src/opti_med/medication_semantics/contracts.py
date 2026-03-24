@@ -26,6 +26,16 @@ StandardizationStatus = Literal[
     "keyword_placeholder",
     "ontology_backed",
 ]
+IngredientResolutionStatus = Literal[
+    "resolved_to_ingredient",
+    "resolved_via_related_concept",
+    "resolved_term_only_no_ingredient",
+    "unresolved_no_match",
+    "unresolved_ambiguous_multi_hit",
+    "unresolved_cache_only_miss",
+    "unresolved_api_error",
+]
+MappingConfidence = Literal["high", "medium", "low", "none"]
 
 
 FUTURE_BURDEN_FEATURE_TODOS: tuple[str, ...] = (
@@ -101,6 +111,43 @@ class NormalizedDose:
     normalized_dose_value: float | None
     normalized_dose_unit: str | None
     normalization_status: StandardizationStatus
+    provenance: ProvenanceMap = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MedicationClassAssignment:
+    """Class assignment output kept separate from identity resolution.
+
+    Class coverage is intentionally partial during the RxNorm bootstrap phase.
+    """
+
+    standardized_ingredient_id: str | None
+    standardized_ingredient_label: str | None
+    class_ids: tuple[str, ...] = ()
+    class_labels: tuple[str, ...] = ()
+    assignment_status: str = "class_assignment_pending"
+    provenance: ProvenanceMap = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MedicationIdentityResolution:
+    """Detailed identity-resolution payload for cache and artifact persistence."""
+
+    raw_name: str | None
+    normalized_query: str | None
+    lookup_strategy_used: str
+    returned_rxcui: str | None
+    matched_term: str | None
+    matched_term_type: str | None
+    medication_standardized: str | None
+    medication_standardized_source: str | None
+    ingredient_rxcui: str | None
+    ingredient_standardized: str | None
+    ingredient_resolution_status: IngredientResolutionStatus
+    mapping_confidence: MappingConfidence
+    ambiguous_match_flag: bool = False
+    multi_hit_candidate_count: int = 0
+    candidate_rxcuis: tuple[str, ...] = ()
     provenance: ProvenanceMap = field(default_factory=dict)
 
 

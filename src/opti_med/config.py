@@ -10,6 +10,13 @@ from pathlib import Path
 DEFAULT_EXTERNAL_DATA_ROOT = Path("data/external")
 DEFAULT_CLINICAL_DATA_ROOT = DEFAULT_EXTERNAL_DATA_ROOT / "mimic-iv-clinical-database-demo-2.2"
 DEFAULT_ED_DATA_ROOT = DEFAULT_EXTERNAL_DATA_ROOT / "mimic-iv-ed-demo-2.2"
+DEFAULT_STANDARDIZED_ROOT = Path("data/standardized")
+DEFAULT_ANALYTICAL_ROOT = Path("data/analytical")
+DEFAULT_MANIFEST_ROOT = DEFAULT_STANDARDIZED_ROOT / "manifests"
+DEFAULT_STANDARDIZED_FILE_EXTENSION = ".parquet"
+DEFAULT_ENCOUNTER_QC_REPORT_PATH = Path("docs/ml_pivot/11_encounter_and_medication_events_qc.md")
+DEFAULT_INGESTION_BEHAVIOR = "incremental"
+DEFAULT_INGESTION_CHUNK_SIZE = 100_000
 DEFAULT_SERUM_CREATININE_ITEMIDS = (50912, 51081, 51977, 52546)
 DEFAULT_SNAPSHOT_STRATEGY = "latest_available"
 
@@ -28,6 +35,15 @@ class Settings:
     interim_root: Path = Path("data/interim")
     processed_root: Path = Path("data/processed")
     final_root: Path = Path("data/final")
+    raw_clinical_data_root: Path | None = None
+    raw_ed_data_root: Path | None = None
+    standardized_root: Path = DEFAULT_STANDARDIZED_ROOT
+    analytical_root: Path = DEFAULT_ANALYTICAL_ROOT
+    manifest_root: Path = DEFAULT_MANIFEST_ROOT
+    standardized_file_extension: str = DEFAULT_STANDARDIZED_FILE_EXTENSION
+    encounter_medication_qc_report_path: Path = DEFAULT_ENCOUNTER_QC_REPORT_PATH
+    ingestion_behavior: str = DEFAULT_INGESTION_BEHAVIOR
+    ingestion_chunk_size: int = DEFAULT_INGESTION_CHUNK_SIZE
     older_adult_age_threshold: int = 65
     polypharmacy_threshold: int = 5
     renal_risk_creatinine_threshold: float = 1.5
@@ -45,19 +61,64 @@ class Settings:
         return self.ed_data_root / self.ed_dir_name
 
     @property
+    def configured_raw_clinical_data_root(self) -> Path:
+        """Return the configured raw clinical root for full-data ingestion."""
+        return self.raw_clinical_data_root or self.clinical_data_root
+
+    @property
+    def configured_raw_ed_data_root(self) -> Path:
+        """Return the configured raw ED root for full-data ingestion."""
+        return self.raw_ed_data_root or self.ed_data_root
+
+    @property
+    def standardized_clinical_root(self) -> Path:
+        """Return the standardized clinical artifact directory."""
+        return self.standardized_root / "clinical"
+
+    @property
+    def standardized_ed_root(self) -> Path:
+        """Return the standardized ED artifact directory."""
+        return self.standardized_root / "ed"
+
+    @property
+    def standardized_manifest_path(self) -> Path:
+        """Return the latest standardized ingestion manifest path."""
+        return self.manifest_root / "latest.json"
+
+    @property
+    def encounter_medication_state_output_path(self) -> Path:
+        """Return the default persisted encounter-medication-state artifact path."""
+        return self.analytical_root / "encounter_medication_state.parquet"
+
+    @property
+    def medication_rxnorm_mapping_output_path(self) -> Path:
+        """Return the default persisted RxNorm medication mapping artifact path."""
+        return self.analytical_root / "medication_rxnorm_mapping.parquet"
+
+    @property
+    def encounter_medication_semantics_output_path(self) -> Path:
+        """Return the default persisted encounter-medication-semantics artifact path."""
+        return self.analytical_root / "encounter_medication_semantics.parquet"
+
+    @property
+    def encounter_medication_burden_output_path(self) -> Path:
+        """Return the default persisted encounter-medication-burden artifact path."""
+        return self.analytical_root / "encounter_medication_burden.parquet"
+
+    @property
     def cohort_output_path(self) -> Path:
         """Return the default interim cohort output path."""
         return self.interim_root / "older_adult_medication_cohort.csv"
 
     @property
     def encounter_index_output_path(self) -> Path:
-        """Return the default interim encounter index path."""
-        return self.interim_root / "encounter_index.csv"
+        """Return the default persisted encounter-index artifact path."""
+        return self.standardized_root / "encounter_index.parquet"
 
     @property
     def medication_events_output_path(self) -> Path:
-        """Return the default interim medication events path."""
-        return self.interim_root / "medication_events.csv"
+        """Return the default persisted medication-events artifact path."""
+        return self.standardized_root / "medication_events.parquet"
 
     @property
     def medication_snapshot_output_path(self) -> Path:
@@ -93,6 +154,37 @@ class Settings:
         interim_root = Path(os.getenv("OPTI_MED_INTERIM_ROOT", "data/interim"))
         processed_root = Path(os.getenv("OPTI_MED_PROCESSED_ROOT", "data/processed"))
         final_root = Path(os.getenv("OPTI_MED_FINAL_ROOT", "data/final"))
+        raw_clinical_root_raw = os.getenv("OPTI_MED_RAW_CLINICAL_DATA_ROOT")
+        raw_ed_root_raw = os.getenv("OPTI_MED_RAW_ED_DATA_ROOT")
+        standardized_root = Path(
+            os.getenv("OPTI_MED_STANDARDIZED_ROOT", str(DEFAULT_STANDARDIZED_ROOT))
+        )
+        analytical_root = Path(
+            os.getenv("OPTI_MED_ANALYTICAL_ROOT", str(DEFAULT_ANALYTICAL_ROOT))
+        )
+        manifest_root = Path(
+            os.getenv("OPTI_MED_MANIFEST_ROOT", str(DEFAULT_MANIFEST_ROOT))
+        )
+        standardized_file_extension = os.getenv(
+            "OPTI_MED_STANDARDIZED_FILE_EXTENSION",
+            DEFAULT_STANDARDIZED_FILE_EXTENSION,
+        )
+        encounter_medication_qc_report_path = Path(
+            os.getenv(
+                "OPTI_MED_ENCOUNTER_MEDICATION_QC_REPORT_PATH",
+                str(DEFAULT_ENCOUNTER_QC_REPORT_PATH),
+            )
+        )
+        ingestion_behavior = os.getenv(
+            "OPTI_MED_INGESTION_BEHAVIOR",
+            DEFAULT_INGESTION_BEHAVIOR,
+        )
+        ingestion_chunk_size = int(
+            os.getenv(
+                "OPTI_MED_INGESTION_CHUNK_SIZE",
+                str(DEFAULT_INGESTION_CHUNK_SIZE),
+            )
+        )
         older_adult_age_threshold = int(
             os.getenv("OPTI_MED_OLDER_ADULT_AGE_THRESHOLD", "65")
         )
@@ -123,6 +215,15 @@ class Settings:
             interim_root=interim_root,
             processed_root=processed_root,
             final_root=final_root,
+            raw_clinical_data_root=Path(raw_clinical_root_raw) if raw_clinical_root_raw else None,
+            raw_ed_data_root=Path(raw_ed_root_raw) if raw_ed_root_raw else None,
+            standardized_root=standardized_root,
+            analytical_root=analytical_root,
+            manifest_root=manifest_root,
+            standardized_file_extension=standardized_file_extension,
+            encounter_medication_qc_report_path=encounter_medication_qc_report_path,
+            ingestion_behavior=ingestion_behavior,
+            ingestion_chunk_size=ingestion_chunk_size,
             older_adult_age_threshold=older_adult_age_threshold,
             polypharmacy_threshold=polypharmacy_threshold,
             renal_risk_creatinine_threshold=renal_risk_creatinine_threshold,
