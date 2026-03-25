@@ -67,6 +67,8 @@ class EncounterMedicationStateRow:
     hadm_id: int | None = None
     stay_id: int | None = None
     review_timestamp_source: str | None = None
+    age_proxy: float | None = None
+    age_group: str | None = None
     medication_raw: str | None = None
     medication_normalized: str | None = None
     medication_standardized: str | None = None

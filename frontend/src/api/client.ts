@@ -1,5 +1,8 @@
 import type {
   AdmissionSummariesResponse,
+  ClinicianReviewSubmissionRequest,
+  ClinicianReviewSubmissionResponse,
+  ClinicianReviewWorkflowReport,
   PatientDetailResponse,
   PatientSummariesResponse,
   ScoredOutputSummary,
@@ -59,4 +62,17 @@ export function getPatientDetail(
 
 export function getLatestScoredOutput(): Promise<ScoredOutputSummary> {
   return apiRequest<ScoredOutputSummary>("/scores/latest");
+}
+
+export function submitClinicianReview(
+  payload: ClinicianReviewSubmissionRequest,
+): Promise<ClinicianReviewSubmissionResponse> {
+  return apiRequest<ClinicianReviewSubmissionResponse>("/clinician-reviews", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getClinicianReviewWorkflowReport(): Promise<ClinicianReviewWorkflowReport> {
+  return apiRequest<ClinicianReviewWorkflowReport>("/clinician-reviews/report");
 }

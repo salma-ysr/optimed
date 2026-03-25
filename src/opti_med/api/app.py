@@ -9,11 +9,19 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from opti_med.api.clinician_reviews import (
+    ClinicianReviewRepository,
+    build_review_queue_hints,
+    summarize_review_queue,
+)
 from opti_med.api.repository import ScoredDataRepository
 from opti_med.api.schemas import (
     AdmissionDetailResponse,
     AdmissionSummariesResponse,
     AdmissionSummary,
+    ClinicianReviewSubmissionRequest,
+    ClinicianReviewSubmissionResponse,
+    ClinicianReviewWorkflowReport,
     DossierEncounterSelection,
     HealthResponse,
     MedicationRowSummary,
@@ -294,6 +302,12 @@ def create_app() -> FastAPI:
             top_problem_flashes=_build_problem_flashes(context_rows),
             flagged_medication_count=flagged_current_count,
             medication_card_count=len(current_cards),
+            review_queue_summary=summarize_review_queue(
+                [
+                    card.model_dump()
+                    for card in [*current_cards, *history_cards]
+                ]
+            ),
         )
 
     @app.get("/patients/{subject_id}/medications", response_model=PatientMedicationsResponse)
@@ -335,6 +349,29 @@ def create_app() -> FastAPI:
             rows=rows,
         )
 
+    @app.post("/clinician-reviews", response_model=ClinicianReviewSubmissionResponse)
+    def submit_clinician_review(
+        payload: ClinicianReviewSubmissionRequest,
+    ) -> ClinicianReviewSubmissionResponse:
+        repository = get_clinician_review_repository()
+        try:
+            review, workflow_report = repository.save_review(submission=payload.model_dump())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return ClinicianReviewSubmissionResponse(
+            review=review,
+            workflow_report=ClinicianReviewWorkflowReport(**workflow_report),
+        )
+
+    @app.get("/clinician-reviews/report", response_model=ClinicianReviewWorkflowReport)
+    def get_clinician_review_report() -> ClinicianReviewWorkflowReport:
+        repository = get_clinician_review_repository()
+        report = repository.write_qc_artifacts()
+        return ClinicianReviewWorkflowReport(**report)
+
     @app.get("/scores/latest", response_model=ScoredOutputSummary)
     def get_latest_scored_output() -> ScoredOutputSummary:
         repository = get_repository()
@@ -369,6 +406,12 @@ def get_settings() -> Settings:
 def get_repository() -> ScoredDataRepository:
     """Return the scored output repository."""
     return ScoredDataRepository(get_settings())
+
+
+@lru_cache
+def get_clinician_review_repository() -> ClinicianReviewRepository:
+    """Return the Phase 5 clinician review repository."""
+    return ClinicianReviewRepository(get_settings())
 
 
 def _load_scored_dataframe() -> pd.DataFrame:
@@ -879,6 +922,8 @@ def _build_review_medication_cards(
         return []
 
     cards: list[PatientMedicationCard] = []
+    review_repository = get_clinician_review_repository()
+    latest_review_lookup = _latest_clinician_review_lookup(review_repository.load_latest_reviews())
     ranked_review = review_rows.sort_values(
         ["review_timestamp", "medication_normalized"],
         ascending=[False, True],
@@ -889,7 +934,15 @@ def _build_review_medication_cards(
         # displayed rule score still comes from the saved admission-first scored output via string
         # matching. Future model output must attach separately to a dedicated review-time row.
         score_record = _best_scored_match_for_review(review_row, scored_rows)
-        cards.append(_build_review_medication_card(review_row, selected_encounter, score_record))
+        cards.append(
+            _build_review_medication_card(
+                review_row,
+                selected_encounter,
+                score_record,
+                review_repository=review_repository,
+                latest_review_lookup=latest_review_lookup,
+            )
+        )
 
     cards.sort(
         key=lambda card: (
@@ -926,6 +979,9 @@ def _build_review_medication_card(
     review_row: dict,
     selected_encounter: dict,
     score_record: dict | None,
+    *,
+    review_repository: ClinicianReviewRepository,
+    latest_review_lookup: dict[tuple[int, str, str, str], dict],
 ) -> PatientMedicationCard:
     base_record = {
         "subject_id": int(review_row["subject_id"]),
@@ -989,7 +1045,107 @@ def _build_review_medication_card(
             else "no_scored_match_for_review_medication"
         ),
     }
+    reviewable_row = review_repository.resolve_reviewable_row(
+        subject_id=int(review_row["subject_id"]),
+        encounter_id=str(selected_encounter["encounter_id"]),
+        review_timestamp=review_row.get("review_timestamp"),
+        medication_candidates=[
+            review_row.get("medication_normalized"),
+            review_row.get("medication_name"),
+            review_row.get("raw_medication_name"),
+            base_record["drug_normalized"],
+            base_record["drug"],
+        ],
+        selected_event_id=review_row.get("selected_event_id"),
+    )
+    clinician_review = None
+    if reviewable_row is not None:
+        review_lookup_key = _review_key_tuple(
+            subject_id=int(reviewable_row["subject_id"]),
+            encounter_id=str(reviewable_row["encounter_id"]),
+            medication_standardized=str(reviewable_row["medication_standardized"]),
+            review_timestamp=str(reviewable_row["review_timestamp"]),
+        )
+        clinician_review = latest_review_lookup.get(review_lookup_key)
+        queue_priority, queue_reasons = build_review_queue_hints(
+            reviewable_row=reviewable_row,
+            clinician_review=clinician_review,
+            displayed_rule_level=str(base_record["deprescribing_priority_label"]),
+        )
+        base_record.update(
+            {
+                "medication_standardized": reviewable_row.get("medication_standardized"),
+                "modeling__row_id": reviewable_row.get("modeling__row_id"),
+                "first_scope_supported_class_flag": _safe_int(
+                    reviewable_row.get("first_scope_supported_class_flag")
+                ),
+                "benchmark__current_rule_score": reviewable_row.get(
+                    "benchmark__current_rule_score"
+                ),
+                "benchmark__current_rule_score_level": reviewable_row.get(
+                    "benchmark__current_rule_score_level"
+                ),
+                "benchmark__current_rule_available_flag": _safe_int(
+                    reviewable_row.get("benchmark__current_rule_available_flag")
+                ),
+                "benchmark__medication_class_only_medication_class_standardized": reviewable_row.get(
+                    "benchmark__medication_class_only_medication_class_standardized"
+                ),
+                "reviewable_flag": True,
+                "review_queue_priority": queue_priority,
+                "review_queue_reasons": queue_reasons,
+                "clinician_review": clinician_review,
+            }
+        )
+    else:
+        base_record.update(
+            {
+                "reviewable_flag": False,
+                "review_queue_priority": "out_of_scope",
+                "review_queue_reasons": ["not_in_phase5_review_scope"],
+                "clinician_review": None,
+            }
+        )
     return PatientMedicationCard(**_clean_record(base_record))
+
+
+def _latest_clinician_review_lookup(dataframe: pd.DataFrame) -> dict[tuple[int, str, str, str], dict]:
+    if dataframe.empty:
+        return {}
+    lookup: dict[tuple[int, str, str, str], dict] = {}
+    for record in dataframe.to_dict(orient="records"):
+        try:
+            key = _review_key_tuple(
+                subject_id=int(record["subject_id"]),
+                encounter_id=str(record["encounter_id"]),
+                medication_standardized=str(record["medication_standardized"]),
+                review_timestamp=str(record["review_timestamp"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        lookup[key] = _clean_record(record)
+    return lookup
+
+
+def _review_key_tuple(
+    *,
+    subject_id: int,
+    encounter_id: str,
+    medication_standardized: str,
+    review_timestamp: str,
+) -> tuple[int, str, str, str]:
+    return (
+        int(subject_id),
+        str(encounter_id),
+        str(medication_standardized),
+        str(review_timestamp),
+    )
+
+
+def _safe_int(value: object) -> int:
+    if value is None or pd.isna(value):
+        return 0
+    return int(value)
 
 
 def _fallback_reasons(explanation_text: object) -> list[str]:

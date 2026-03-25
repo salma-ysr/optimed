@@ -93,6 +93,42 @@ class MedicationConsolidationTests(unittest.TestCase):
         self.assertEqual(int(burden.iloc[0]["current_peak_concurrent_medication_count"]), 2)
         self.assertEqual(int(burden.iloc[0]["current_polypharmacy_flag"]), 1)
 
+    def test_missing_stop_time_adopts_later_stop_time_within_episode(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "subject_id": 1,
+                    "hadm_id": 11,
+                    "drug": "Fentanyl Citrate",
+                    "drug_normalized": "fentanyl citrate",
+                    "starttime": "2135-01-06 00:00:00",
+                    "stoptime": None,
+                },
+                {
+                    "subject_id": 1,
+                    "hadm_id": 11,
+                    "drug": "Fentanyl Citrate",
+                    "drug_normalized": "fentanyl citrate",
+                    "starttime": "2135-01-06 06:00:00",
+                    "stoptime": "2135-01-08 00:00:00",
+                },
+            ]
+        )
+
+        collapsed = collapse_continuation_intervals(
+            frame,
+            group_columns=["subject_id", "hadm_id", "drug_normalized"],
+            start_column="starttime",
+            stop_column="stoptime",
+            segment_fields=["drug", "starttime", "stoptime"],
+            episode_id_prefix="test-episode",
+        )
+
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(collapsed.iloc[0]["starttime"], "2135-01-06 00:00:00")
+        self.assertEqual(collapsed.iloc[0]["stoptime"], "2135-01-08 00:00:00")
+        self.assertEqual(collapsed.iloc[0]["prescription_segment_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

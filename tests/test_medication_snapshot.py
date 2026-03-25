@@ -88,6 +88,30 @@ class MedicationSnapshotHelperTests(unittest.TestCase):
         self.assertEqual(str(review_time), "2125-03-20 09:00:00")
         self.assertEqual(review_source, "lab")
 
+    def test_select_review_timestamp_uses_precomputed_lab_lookup(self) -> None:
+        encounter = {
+            "subject_id": 1,
+            "hadm_id": 10,
+            "stay_id": None,
+            "encounter_id": "hadm:10",
+            "encounter_start": "2125-03-19 12:36:00",
+            "encounter_end": "2125-03-20 10:00:00",
+            "dischtime": "2125-03-20 10:00:00",
+        }
+        review_time, review_source = select_review_timestamp_metadata_for_encounter(
+            encounter,
+            strategy="latest_available",
+            medication_events=pd.DataFrame(),
+            labevents=None,
+            triage=None,
+            vitalsign=None,
+            latest_lab_timestamp_by_hadm_id={
+                10: pd.Timestamp("2125-03-20 09:00:00"),
+            },
+        )
+        self.assertEqual(str(review_time), "2125-03-20 09:00:00")
+        self.assertEqual(review_source, "lab")
+
     def test_hospital_order_is_active_at_later_snapshot(self) -> None:
         row = {
             "medication_event_type": "hospital_order",

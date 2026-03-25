@@ -12,13 +12,32 @@ DEFAULT_CLINICAL_DATA_ROOT = DEFAULT_EXTERNAL_DATA_ROOT / "mimic-iv-clinical-dat
 DEFAULT_ED_DATA_ROOT = DEFAULT_EXTERNAL_DATA_ROOT / "mimic-iv-ed-demo-2.2"
 DEFAULT_STANDARDIZED_ROOT = Path("data/standardized")
 DEFAULT_ANALYTICAL_ROOT = Path("data/analytical")
+DEFAULT_FEATURE_STORE_ROOT = Path("data/feature_store")
+DEFAULT_LABEL_ROOT = Path("data/labels")
+DEFAULT_MODELING_ROOT = Path("data/modeling")
 DEFAULT_MANIFEST_ROOT = DEFAULT_STANDARDIZED_ROOT / "manifests"
 DEFAULT_STANDARDIZED_FILE_EXTENSION = ".parquet"
 DEFAULT_ENCOUNTER_QC_REPORT_PATH = Path("docs/ml_pivot/11_encounter_and_medication_events_qc.md")
+DEFAULT_FIRST_SCOPE_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/14_first_scope_semantics_and_burden_65plus_qc.md"
+)
+DEFAULT_FEATURE_STORE_LEAKAGE_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/15a_feature_store_leakage_qc_65plus_first_scope.md"
+)
+DEFAULT_FIRST_SCOPE_LABEL_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/16a_labels_v1_65plus_first_scope_qc.md"
+)
+DEFAULT_FIRST_SCOPE_DATASET_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/17a_dataset_v1_65plus_first_scope_qc.md"
+)
+DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/18_phase5_clinician_review_workflow_qc.md"
+)
 DEFAULT_INGESTION_BEHAVIOR = "incremental"
 DEFAULT_INGESTION_CHUNK_SIZE = 100_000
 DEFAULT_SERUM_CREATININE_ITEMIDS = (50912, 51081, 51977, 52546)
 DEFAULT_SNAPSHOT_STRATEGY = "latest_available"
+DEFAULT_CLINICIAN_REVIEWER_ID = "pharmacist_demo_local"
 
 
 @dataclass(frozen=True)
@@ -39,6 +58,9 @@ class Settings:
     raw_ed_data_root: Path | None = None
     standardized_root: Path = DEFAULT_STANDARDIZED_ROOT
     analytical_root: Path = DEFAULT_ANALYTICAL_ROOT
+    feature_store_root: Path = DEFAULT_FEATURE_STORE_ROOT
+    label_root: Path = DEFAULT_LABEL_ROOT
+    modeling_root: Path = DEFAULT_MODELING_ROOT
     manifest_root: Path = DEFAULT_MANIFEST_ROOT
     standardized_file_extension: str = DEFAULT_STANDARDIZED_FILE_EXTENSION
     encounter_medication_qc_report_path: Path = DEFAULT_ENCOUNTER_QC_REPORT_PATH
@@ -49,6 +71,7 @@ class Settings:
     renal_risk_creatinine_threshold: float = 1.5
     serum_creatinine_itemids: tuple[int, ...] = DEFAULT_SERUM_CREATININE_ITEMIDS
     snapshot_strategy: str = DEFAULT_SNAPSHOT_STRATEGY
+    default_clinician_reviewer_id: str = DEFAULT_CLINICIAN_REVIEWER_ID
 
     @property
     def hosp_root(self) -> Path:
@@ -88,27 +111,125 @@ class Settings:
     @property
     def encounter_medication_state_output_path(self) -> Path:
         """Return the default persisted encounter-medication-state artifact path."""
-        return self.analytical_root / "encounter_medication_state.parquet"
+        return self.analytical_root / "encounter_medication_state_65plus.parquet"
+
+    @property
+    def older_adult_eligibility_output_path(self) -> Path:
+        """Return the default persisted 65+ encounter-eligibility artifact path."""
+        return self.analytical_root / "eligible_encounters_65plus.parquet"
 
     @property
     def medication_rxnorm_mapping_output_path(self) -> Path:
         """Return the default persisted RxNorm medication mapping artifact path."""
-        return self.analytical_root / "medication_rxnorm_mapping.parquet"
+        return self.analytical_root / "medication_rxnorm_mapping_65plus.parquet"
+
+    @property
+    def encounter_medication_state_rxnorm_output_path(self) -> Path:
+        """Return the default persisted RxNorm-enriched 65+ state artifact path."""
+        return self.analytical_root / "encounter_medication_state_65plus_rxnorm.parquet"
 
     @property
     def encounter_medication_semantics_output_path(self) -> Path:
         """Return the default persisted encounter-medication-semantics artifact path."""
-        return self.analytical_root / "encounter_medication_semantics.parquet"
+        return self.analytical_root / "encounter_medication_semantics_65plus.parquet"
 
     @property
     def encounter_medication_burden_output_path(self) -> Path:
         """Return the default persisted encounter-medication-burden artifact path."""
-        return self.analytical_root / "encounter_medication_burden.parquet"
+        return self.analytical_root / "encounter_medication_burden_65plus.parquet"
+
+    @property
+    def encounter_medication_first_scope_output_path(self) -> Path:
+        """Return the default persisted first-scope 65+ encounter-medication artifact path."""
+        return self.analytical_root / "encounter_medication_first_scope_65plus.parquet"
+
+    @property
+    def encounter_medication_first_scope_qc_report_path(self) -> Path:
+        """Return the default QC report path for the first-scope 65+ artifacts."""
+        return DEFAULT_FIRST_SCOPE_QC_REPORT_PATH
 
     @property
     def cohort_output_path(self) -> Path:
         """Return the default interim cohort output path."""
         return self.interim_root / "older_adult_medication_cohort.csv"
+
+    @property
+    def first_scope_patient_context_features_output_path(self) -> Path:
+        """Return the default persisted first-scope patient-context stage path."""
+        return self.feature_store_root / "first_scope_patient_context_features_65plus.parquet"
+
+    @property
+    def first_scope_temporal_features_output_path(self) -> Path:
+        """Return the default persisted first-scope temporal stage path."""
+        return self.feature_store_root / "first_scope_temporal_features_65plus.parquet"
+
+    @property
+    def first_scope_feature_store_output_path(self) -> Path:
+        """Return the default persisted first-scope feature-store v1 path."""
+        return self.feature_store_root / "encounter_medication_features_v1_65plus_first_scope.parquet"
+
+    @property
+    def first_scope_feature_store_metadata_output_path(self) -> Path:
+        """Return the default persisted feature dictionary / metadata artifact path."""
+        return (
+            self.feature_store_root
+            / "encounter_medication_features_v1_65plus_first_scope_metadata.json"
+        )
+
+    @property
+    def first_scope_feature_store_leakage_qc_report_path(self) -> Path:
+        """Return the default leakage QC report path for first-scope feature-store v1."""
+        return DEFAULT_FEATURE_STORE_LEAKAGE_QC_REPORT_PATH
+
+    @property
+    def first_scope_labels_output_path(self) -> Path:
+        """Return the default persisted first-scope Labels v1 artifact path."""
+        return self.label_root / "encounter_medication_labels_v1_65plus_first_scope.parquet"
+
+    @property
+    def first_scope_label_qc_report_path(self) -> Path:
+        """Return the default QC report path for first-scope Labels v1."""
+        return DEFAULT_FIRST_SCOPE_LABEL_QC_REPORT_PATH
+
+    @property
+    def first_scope_dataset_output_path(self) -> Path:
+        """Return the default persisted Dataset v1 path for the 65+ first-scope subset."""
+        return self.modeling_root / "encounter_medication_dataset_v1_65plus_first_scope.parquet"
+
+    @property
+    def first_scope_splits_output_path(self) -> Path:
+        """Return the default persisted split assignment path for Dataset v1."""
+        return self.modeling_root / "splits_v1_65plus_first_scope.parquet"
+
+    @property
+    def first_scope_feature_list_output_path(self) -> Path:
+        """Return the default persisted feature-list JSON path for Dataset v1."""
+        return self.modeling_root / "feature_list_v1_65plus_first_scope.json"
+
+    @property
+    def first_scope_dataset_qc_report_path(self) -> Path:
+        """Return the default QC report path for Dataset v1 and its splits."""
+        return DEFAULT_FIRST_SCOPE_DATASET_QC_REPORT_PATH
+
+    @property
+    def clinician_review_event_log_path(self) -> Path:
+        """Return the append-only Phase 5 clinician review event log path."""
+        return self.label_root / "clinician_review_events_v1_phase5.jsonl"
+
+    @property
+    def clinician_review_snapshot_output_path(self) -> Path:
+        """Return the latest-active Phase 5 clinician review snapshot path."""
+        return self.label_root / "clinician_review_labels_v1_phase5.parquet"
+
+    @property
+    def clinician_review_qc_summary_path(self) -> Path:
+        """Return the machine-readable Phase 5 clinician review QC summary path."""
+        return self.label_root / "clinician_review_workflow_qc_v1_phase5.json"
+
+    @property
+    def clinician_review_qc_report_path(self) -> Path:
+        """Return the markdown QC report path for the Phase 5 workflow."""
+        return DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH
 
     @property
     def encounter_index_output_path(self) -> Path:
@@ -162,6 +283,11 @@ class Settings:
         analytical_root = Path(
             os.getenv("OPTI_MED_ANALYTICAL_ROOT", str(DEFAULT_ANALYTICAL_ROOT))
         )
+        feature_store_root = Path(
+            os.getenv("OPTI_MED_FEATURE_STORE_ROOT", str(DEFAULT_FEATURE_STORE_ROOT))
+        )
+        label_root = Path(os.getenv("OPTI_MED_LABEL_ROOT", str(DEFAULT_LABEL_ROOT)))
+        modeling_root = Path(os.getenv("OPTI_MED_MODELING_ROOT", str(DEFAULT_MODELING_ROOT)))
         manifest_root = Path(
             os.getenv("OPTI_MED_MANIFEST_ROOT", str(DEFAULT_MANIFEST_ROOT))
         )
@@ -197,6 +323,10 @@ class Settings:
             "OPTI_MED_SNAPSHOT_STRATEGY",
             DEFAULT_SNAPSHOT_STRATEGY,
         )
+        default_clinician_reviewer_id = os.getenv(
+            "OPTI_MED_DEFAULT_CLINICIAN_REVIEWER_ID",
+            DEFAULT_CLINICIAN_REVIEWER_ID,
+        )
         serum_creatinine_itemids = DEFAULT_SERUM_CREATININE_ITEMIDS
         if serum_creatinine_itemids_raw:
             serum_creatinine_itemids = tuple(
@@ -219,6 +349,9 @@ class Settings:
             raw_ed_data_root=Path(raw_ed_root_raw) if raw_ed_root_raw else None,
             standardized_root=standardized_root,
             analytical_root=analytical_root,
+            feature_store_root=feature_store_root,
+            label_root=label_root,
+            modeling_root=modeling_root,
             manifest_root=manifest_root,
             standardized_file_extension=standardized_file_extension,
             encounter_medication_qc_report_path=encounter_medication_qc_report_path,
@@ -229,4 +362,5 @@ class Settings:
             renal_risk_creatinine_threshold=renal_risk_creatinine_threshold,
             serum_creatinine_itemids=serum_creatinine_itemids,
             snapshot_strategy=snapshot_strategy,
+            default_clinician_reviewer_id=default_clinician_reviewer_id,
         )

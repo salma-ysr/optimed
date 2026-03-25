@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import tempfile
 import warnings
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +19,7 @@ from opti_med.data_access.artifact_schemas import (
     validate_medication_events_artifact,
 )
 from opti_med.data_access.encounters import EncounterIndexBuilder
+from opti_med.data_access.exceptions import DataLoadError
 from opti_med.data_access.medication_consolidation import (
     collapse_continuation_intervals,
     normalize_medication_name,
@@ -26,13 +29,131 @@ from opti_med.data_access.provenance import (
     loads_json_or_none,
     source_provenance_payload,
 )
+from opti_med.standardized.specs import get_table_spec
 from opti_med.standardized import SOURCE_MANIFEST_METADATA_COLUMNS, StandardizedParquetRepository
+from opti_med.standardized.writer import ParquetStandardizedWriter
 
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 CONTINUITY_INFERENCE_RULE = (
     "home_medrecon_match_within_subject_hadm_or_stay_after_simple_text_canonicalization"
 )
+DEFAULT_STREAMING_SUBJECT_PARTITION_COUNT = 128
+DEFAULT_STREAMING_BATCH_SIZE = 200_000
+STREAMING_ROW_COUNT_THRESHOLD = 1_000_000
+STREAMING_SOURCE_TABLES: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
+    (
+        "clinical",
+        "prescriptions",
+        (
+            "subject_id",
+            "hadm_id",
+            "pharmacy_id",
+            "poe_id",
+            "starttime",
+            "stoptime",
+            "drug",
+            "route",
+            "dose_val_rx",
+            "dose_unit_rx",
+            "doses_per_24_hrs",
+            *SOURCE_MANIFEST_METADATA_COLUMNS,
+        ),
+        True,
+    ),
+    (
+        "ed",
+        "medrecon",
+        ("subject_id", "stay_id", "charttime", "name", *SOURCE_MANIFEST_METADATA_COLUMNS),
+        False,
+    ),
+    (
+        "ed",
+        "pyxis",
+        (
+            "subject_id",
+            "stay_id",
+            "charttime",
+            "name",
+            "med_rn",
+            *SOURCE_MANIFEST_METADATA_COLUMNS,
+        ),
+        False,
+    ),
+    (
+        "ed",
+        "edstays",
+        ("subject_id", "hadm_id", "stay_id"),
+        True,
+    ),
+    (
+        "clinical",
+        "pharmacy",
+        (
+            "subject_id",
+            "hadm_id",
+            "pharmacy_id",
+            "poe_id",
+            "medication",
+            "status",
+            "route",
+            "frequency",
+            "starttime",
+            "stoptime",
+            *SOURCE_MANIFEST_METADATA_COLUMNS,
+        ),
+        False,
+    ),
+    (
+        "clinical",
+        "emar",
+        (
+            "subject_id",
+            "hadm_id",
+            "emar_id",
+            "emar_seq",
+            "poe_id",
+            "pharmacy_id",
+            "charttime",
+            "medication",
+            "event_txt",
+            "scheduletime",
+            *SOURCE_MANIFEST_METADATA_COLUMNS,
+        ),
+        False,
+    ),
+    (
+        "clinical",
+        "emar_detail",
+        (
+            "subject_id",
+            "emar_id",
+            "emar_seq",
+            "pharmacy_id",
+            "dose_given",
+            "dose_given_unit",
+            "route",
+            *SOURCE_MANIFEST_METADATA_COLUMNS,
+        ),
+        False,
+    ),
+)
+MEDICATION_EVENT_NULL_RATE_COLUMNS = [
+    "subject_id",
+    "encounter_id",
+    "medication_event_id",
+    "medication_normalized",
+    "medication_prestandardized_text",
+    "event_time",
+    "event_source_category",
+]
+MEDICATION_EVENT_DUPLICATE_COMPOSITE_COLUMNS = [
+    "subject_id",
+    "encounter_id",
+    "medication_event_type",
+    "medication_normalized",
+    "event_time",
+]
 
 
 @dataclass(frozen=True)
@@ -41,6 +162,77 @@ class MedicationEventsBuildResult:
 
     dataframe: pd.DataFrame
     output_path: Path
+
+
+@dataclass(frozen=True)
+class MedicationEventsQcMetrics:
+    """Compact QC metrics accumulated without loading the full artifact back into memory."""
+
+    row_count: int
+    unique_subject_count: int
+    unique_medication_event_id_count: int
+    null_counts: dict[str, int]
+    event_source_category_counts: dict[str, int]
+    order_enrichment_applied_count: int
+    duplicate_medication_event_id_count: int
+    duplicate_composite_count: int
+    build_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MedicationEventsStreamingBuildResult:
+    """Persisted streaming medication-events artifact plus its QC summary."""
+
+    output_path: Path
+    row_count: int
+    schema_summary: dict[str, str]
+    metrics: MedicationEventsQcMetrics
+
+
+class _MedicationEventsMetricsAccumulator:
+    """Mutable accumulator for partition-wise medication-events QC metrics."""
+
+    def __init__(self, *, build_run_id: str) -> None:
+        self.build_run_id = build_run_id
+        self.row_count = 0
+        self.subject_ids: set[int] = set()
+        self.null_counts = {column_name: 0 for column_name in MEDICATION_EVENT_NULL_RATE_COLUMNS}
+        self.event_source_category_counts: Counter[str] = Counter()
+        self.order_enrichment_applied_count = 0
+        self.duplicate_composite_count = 0
+
+    def add_partition(self, dataframe: pd.DataFrame) -> None:
+        if dataframe.empty:
+            return
+        self.row_count += len(dataframe)
+        self.subject_ids.update(
+            int(value)
+            for value in pd.to_numeric(dataframe["subject_id"], errors="coerce").dropna().astype(int).tolist()
+        )
+        for column_name in MEDICATION_EVENT_NULL_RATE_COLUMNS:
+            self.null_counts[column_name] += int(dataframe[column_name].isna().sum())
+        self.event_source_category_counts.update(
+            dataframe["event_source_category"].fillna("null").astype(str).value_counts(dropna=False).to_dict()
+        )
+        self.order_enrichment_applied_count += int(
+            pd.to_numeric(dataframe["order_enrichment_applied_flag"], errors="coerce").fillna(0).sum()
+        )
+        self.duplicate_composite_count += int(
+            dataframe.duplicated(subset=MEDICATION_EVENT_DUPLICATE_COMPOSITE_COLUMNS, keep=False).sum()
+        )
+
+    def finalize(self) -> MedicationEventsQcMetrics:
+        return MedicationEventsQcMetrics(
+            row_count=self.row_count,
+            unique_subject_count=len(self.subject_ids),
+            unique_medication_event_id_count=self.row_count,
+            null_counts=dict(self.null_counts),
+            event_source_category_counts=dict(self.event_source_category_counts),
+            order_enrichment_applied_count=self.order_enrichment_applied_count,
+            duplicate_medication_event_id_count=0,
+            duplicate_composite_count=self.duplicate_composite_count,
+            build_run_ids=(self.build_run_id,),
+        )
 
 
 class CanonicalMedicationEventBuilder:
@@ -53,6 +245,15 @@ class CanonicalMedicationEventBuilder:
 
     def build(self, encounter_index: pd.DataFrame | None = None) -> pd.DataFrame:
         """Build the canonical medication-events table with stable columns."""
+        if self.should_use_streaming():
+            persisted_path = self.settings.medication_events_output_path
+            if persisted_path.exists():
+                return self.repository.load_analytical_artifact("medication_events")
+            raise DataLoadError(
+                "Medication-events build for this standardized snapshot requires the streaming path. "
+                "Run `python3 -m opti_med.cli.build_medication_events --standardized-root "
+                f"{self.settings.standardized_root}`."
+            )
         build_run_id = f"medication-events-{uuid4().hex[:12]}"
         encounter_index = encounter_index if encounter_index is not None else self.encounter_builder.build()
 
@@ -90,6 +291,11 @@ class CanonicalMedicationEventBuilder:
                 "med_rn",
                 *SOURCE_MANIFEST_METADATA_COLUMNS,
             ],
+        )
+        edstays = self.repository.load_optional_source_table(
+            "ed",
+            "edstays",
+            columns=["subject_id", "hadm_id", "stay_id"],
         )
         pharmacy = self.repository.load_optional_source_table(
             "clinical",
@@ -143,11 +349,13 @@ class CanonicalMedicationEventBuilder:
         home_events = extract_home_medications(
             medrecon.dataframe if medrecon else None,
             encounter_index=encounter_index,
+            edstays=edstays.dataframe if edstays else None,
             standardized_reference=medrecon.standardized_reference if medrecon else None,
         )
         ed_events = extract_ed_medications(
             pyxis.dataframe if pyxis else None,
             encounter_index=encounter_index,
+            edstays=edstays.dataframe if edstays else None,
             standardized_reference=pyxis.standardized_reference if pyxis else None,
         )
         hospital_order_events = extract_hospital_med_orders(
@@ -218,20 +426,67 @@ class CanonicalMedicationEventBuilder:
         else:
             medication_events = _empty_medication_events()
 
-        medication_events = medication_events.loc[:, MEDICATION_EVENT_COLUMNS].copy()
-        medication_events = _fill_medication_event_defaults(medication_events)
-        medication_events = infer_home_medication_continuity(medication_events)
-        medication_events["medication_event_build_run_id"] = build_run_id
-        medication_events["medication_event_contract_version"] = MEDICATION_EVENTS_CONTRACT_VERSION
-        medication_events = medication_events.drop_duplicates(
-            subset=["medication_event_id"],
-        ).reset_index(drop=True)
-        medication_events = medication_events.sort_values(
-            ["subject_id", "encounter_start", "event_time", "medication_normalized"],
-            na_position="last",
-        ).reset_index(drop=True)
-        validate_medication_events_artifact(medication_events)
-        return medication_events
+        return _finalize_medication_events_artifact(
+            medication_events,
+            build_run_id=build_run_id,
+        )
+
+    def should_use_streaming(self) -> bool:
+        """Return whether this standardized snapshot should use the streaming build path."""
+        for dataset_name, table_name, _, _ in STREAMING_SOURCE_TABLES:
+            row_count = self.repository.source_table_row_count(dataset_name, table_name)
+            if row_count is not None and row_count >= STREAMING_ROW_COUNT_THRESHOLD:
+                return True
+            path = self.repository.source_table_path(get_table_spec(dataset_name, table_name))
+            if path.exists() and path.stat().st_size >= 200_000_000:
+                return True
+        return False
+
+    def build_and_save_streaming(
+        self,
+        *,
+        encounter_index: pd.DataFrame | None = None,
+        output_path: Path | None = None,
+        subject_partition_count: int = DEFAULT_STREAMING_SUBJECT_PARTITION_COUNT,
+        partition_batch_size: int = DEFAULT_STREAMING_BATCH_SIZE,
+    ) -> MedicationEventsStreamingBuildResult:
+        """Build medication events via subject-partitioned streaming and persist them directly to Parquet."""
+        build_run_id = f"medication-events-{uuid4().hex[:12]}"
+        encounter_index = encounter_index if encounter_index is not None else self.encounter_builder.build()
+        target_path = output_path or self.settings.medication_events_output_path
+        metrics = _MedicationEventsMetricsAccumulator(build_run_id=build_run_id)
+        writer = ParquetStandardizedWriter()
+        empty_dataframe = _empty_medication_events()
+
+        with tempfile.TemporaryDirectory(prefix="medication-events-stream-") as temp_dir_raw:
+            temp_dir = Path(temp_dir_raw)
+            partitioned_sources = self._partition_source_tables_for_streaming(
+                temp_dir=temp_dir,
+                subject_partition_count=subject_partition_count,
+                partition_batch_size=partition_batch_size,
+            )
+            encounter_partitions = _partition_encounter_index(
+                encounter_index,
+                subject_partition_count=subject_partition_count,
+            )
+            write_result = writer.write_batches(
+                self._iter_streaming_partition_batches(
+                    encounter_partitions=encounter_partitions,
+                    partitioned_sources=partitioned_sources,
+                    build_run_id=build_run_id,
+                    subject_partition_count=subject_partition_count,
+                    metrics=metrics,
+                ),
+                output_path=target_path,
+                empty_dataframe=empty_dataframe,
+            )
+
+        return MedicationEventsStreamingBuildResult(
+            output_path=write_result.output_path,
+            row_count=write_result.row_count,
+            schema_summary=write_result.schema_summary,
+            metrics=metrics.finalize(),
+        )
 
     def save(
         self,
@@ -245,11 +500,170 @@ class CanonicalMedicationEventBuilder:
         dataframe.to_parquet(target_path, index=False)
         return MedicationEventsBuildResult(dataframe=dataframe, output_path=target_path)
 
+    def _partition_source_tables_for_streaming(
+        self,
+        *,
+        temp_dir: Path,
+        subject_partition_count: int,
+        partition_batch_size: int,
+    ) -> dict[tuple[str, str], Path]:
+        partition_roots: dict[tuple[str, str], Path] = {}
+        for dataset_name, table_name, columns, required in STREAMING_SOURCE_TABLES:
+            spec = get_table_spec(dataset_name, table_name)
+            source_path = self.repository.source_table_path(spec)
+            if not source_path.exists():
+                if required:
+                    raise DataLoadError(
+                        f"Expected standardized table '{dataset_name}.{table_name}' at '{source_path}', but it does not exist."
+                    )
+                continue
+            partition_root = temp_dir / f"{dataset_name}__{table_name}"
+            _partition_parquet_by_subject(
+                source_path=source_path,
+                columns=list(columns),
+                partition_root=partition_root,
+                subject_partition_count=subject_partition_count,
+                batch_size=partition_batch_size,
+            )
+            partition_roots[(dataset_name, table_name)] = partition_root
+        return partition_roots
+
+    def _iter_streaming_partition_batches(
+        self,
+        *,
+        encounter_partitions: dict[int, pd.DataFrame],
+        partitioned_sources: dict[tuple[str, str], Path],
+        build_run_id: str,
+        subject_partition_count: int,
+        metrics: _MedicationEventsMetricsAccumulator,
+    ):
+        for partition_id in range(subject_partition_count):
+            encounter_partition = encounter_partitions.get(partition_id)
+            if encounter_partition is None or encounter_partition.empty:
+                continue
+
+            medrecon = _load_partition_dataframe(
+                partitioned_sources.get(("ed", "medrecon")),
+                partition_id=partition_id,
+            )
+            pyxis = _load_partition_dataframe(
+                partitioned_sources.get(("ed", "pyxis")),
+                partition_id=partition_id,
+            )
+            edstays = _load_partition_dataframe(
+                partitioned_sources.get(("ed", "edstays")),
+                partition_id=partition_id,
+            )
+            prescriptions = _load_partition_dataframe(
+                partitioned_sources.get(("clinical", "prescriptions")),
+                partition_id=partition_id,
+            )
+            pharmacy = _load_partition_dataframe(
+                partitioned_sources.get(("clinical", "pharmacy")),
+                partition_id=partition_id,
+            )
+            emar = _load_partition_dataframe(
+                partitioned_sources.get(("clinical", "emar")),
+                partition_id=partition_id,
+            )
+            emar_detail = _load_partition_dataframe(
+                partitioned_sources.get(("clinical", "emar_detail")),
+                partition_id=partition_id,
+            )
+
+            home_events = extract_home_medications(
+                medrecon,
+                encounter_index=encounter_partition,
+                edstays=edstays,
+                standardized_reference=self.repository.source_table_standardized_reference("ed", "medrecon"),
+            )
+            ed_events = extract_ed_medications(
+                pyxis,
+                encounter_index=encounter_partition,
+                edstays=edstays,
+                standardized_reference=self.repository.source_table_standardized_reference("ed", "pyxis"),
+            )
+            hospital_order_events = extract_hospital_med_orders(
+                prescriptions=_empty_source_frame(_prescriptions_columns()) if prescriptions is None else prescriptions,
+                encounter_index=encounter_partition,
+                standardized_reference=self.repository.source_table_standardized_reference("clinical", "prescriptions"),
+            )
+            hospital_order_events = enrich_hospital_meds_with_pharmacy(
+                hospital_order_events,
+                pharmacy,
+                standardized_reference=self.repository.source_table_standardized_reference("clinical", "pharmacy"),
+            )
+            hospital_order_events = collapse_continuation_intervals(
+                hospital_order_events,
+                group_columns=["subject_id", "encounter_id", "medication_normalized"],
+                start_column="starttime",
+                stop_column="stoptime",
+                segment_fields=[
+                    "medication_event_id",
+                    "event_source_category",
+                    "event_source_table",
+                    "raw_medication_name",
+                    "medication_name",
+                    "medication_prestandardized_text",
+                    "starttime",
+                    "stoptime",
+                    "route",
+                    "frequency",
+                    "dose_value",
+                    "dose_unit",
+                    "status",
+                    "pharmacy_id",
+                    "poe_id",
+                    "pharmacy_enriched_flag",
+                    "order_enrichment_applied_flag",
+                    "order_enrichment_source_table",
+                    "source_tables_json",
+                    "source_record_provenance_json",
+                ],
+                episode_id_prefix="event-episode",
+            ).reindex(columns=MEDICATION_EVENT_COLUMNS)
+            hospital_admin_events = extract_hospital_admin_events(
+                emar=emar,
+                emar_detail=emar_detail,
+                encounter_index=encounter_partition,
+                emar_reference=self.repository.source_table_standardized_reference("clinical", "emar"),
+                emar_detail_reference=self.repository.source_table_standardized_reference("clinical", "emar_detail"),
+            )
+
+            event_frames = [
+                frame
+                for frame in [
+                    home_events,
+                    ed_events,
+                    hospital_order_events,
+                    hospital_admin_events,
+                ]
+                if not frame.empty
+            ]
+            if not event_frames:
+                continue
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+                    category=FutureWarning,
+                )
+                medication_events = pd.concat(event_frames, ignore_index=True, sort=False)
+
+            medication_events = _finalize_medication_events_artifact(
+                medication_events,
+                build_run_id=build_run_id,
+            )
+            metrics.add_partition(medication_events)
+            yield medication_events
+
 
 def extract_home_medications(
     medrecon: pd.DataFrame | None,
     *,
     encounter_index: pd.DataFrame,
+    edstays: pd.DataFrame | None = None,
     standardized_reference: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     """Extract pre-admission medication history from ED medication reconciliation."""
@@ -259,10 +673,18 @@ def extract_home_medications(
     home = medrecon.loc[:, ["subject_id", "stay_id", "charttime", "name", *SOURCE_MANIFEST_METADATA_COLUMNS]].copy()
     home["charttime"] = pd.to_datetime(home["charttime"], errors="coerce")
     home["medication_normalized"] = home["name"].map(normalize_medication_name)
-    home = home.loc[home["medication_normalized"].notna()].copy().reset_index(drop=True)
+    home = home.loc[home["medication_normalized"].notna()].copy()
+    home = _stable_sort_frame(
+        home,
+        ["subject_id", "stay_id", "charttime", "name", "medication_normalized"],
+    ).reset_index(drop=True)
     if home.empty:
         return _empty_medication_events()
-    home = _attach_ed_encounter_context(home, encounter_index=encounter_index)
+    home = _attach_ed_encounter_context(
+        home,
+        encounter_index=encounter_index,
+        edstays=edstays,
+    )
     home["medication_event_id"] = (
         "home-medrecon-"
         + home["subject_id"].astype(str)
@@ -327,6 +749,7 @@ def extract_ed_medications(
     pyxis: pd.DataFrame | None,
     *,
     encounter_index: pd.DataFrame,
+    edstays: pd.DataFrame | None = None,
     standardized_reference: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     """Extract ED medication dispense events from standardized Pyxis data."""
@@ -340,10 +763,18 @@ def extract_ed_medications(
     ed["raw_name"] = ed["name"].where(ed["name"].notna() & (ed["name"] != ""), ed["med_rn"])
     ed["charttime"] = pd.to_datetime(ed["charttime"], errors="coerce")
     ed["medication_normalized"] = ed["raw_name"].map(normalize_medication_name)
-    ed = ed.loc[ed["medication_normalized"].notna()].copy().reset_index(drop=True)
+    ed = ed.loc[ed["medication_normalized"].notna()].copy()
+    ed = _stable_sort_frame(
+        ed,
+        ["subject_id", "stay_id", "charttime", "raw_name", "medication_normalized"],
+    ).reset_index(drop=True)
     if ed.empty:
         return _empty_medication_events()
-    ed = _attach_ed_encounter_context(ed, encounter_index=encounter_index)
+    ed = _attach_ed_encounter_context(
+        ed,
+        encounter_index=encounter_index,
+        edstays=edstays,
+    )
     ed["medication_event_id"] = (
         "ed-pyxis-"
         + ed["subject_id"].astype(str)
@@ -431,7 +862,20 @@ def extract_hospital_med_orders(
     orders["starttime"] = pd.to_datetime(orders["starttime"], errors="coerce")
     orders["stoptime"] = pd.to_datetime(orders["stoptime"], errors="coerce")
     orders["medication_normalized"] = orders["drug"].map(normalize_medication_name)
-    orders = orders.loc[orders["medication_normalized"].notna()].copy().reset_index(drop=True)
+    orders = orders.loc[orders["medication_normalized"].notna()].copy()
+    orders = _stable_sort_frame(
+        orders,
+        [
+            "subject_id",
+            "hadm_id",
+            "starttime",
+            "stoptime",
+            "drug",
+            "pharmacy_id",
+            "poe_id",
+            "medication_normalized",
+        ],
+    ).reset_index(drop=True)
     if orders.empty:
         return _empty_medication_events()
     orders = _attach_hospital_encounter_context(orders, encounter_index=encounter_index)
@@ -642,7 +1086,20 @@ def extract_hospital_admin_events(
     admin["charttime"] = pd.to_datetime(admin["charttime"], errors="coerce")
     admin["scheduletime"] = pd.to_datetime(admin["scheduletime"], errors="coerce")
     admin["medication_normalized"] = admin["medication"].map(normalize_medication_name)
-    admin = admin.loc[admin["medication_normalized"].notna()].copy().reset_index(drop=True)
+    admin = admin.loc[admin["medication_normalized"].notna()].copy()
+    admin = _stable_sort_frame(
+        admin,
+        [
+            "subject_id",
+            "hadm_id",
+            "charttime",
+            "scheduletime",
+            "emar_id",
+            "emar_seq",
+            "medication",
+            "medication_normalized",
+        ],
+    ).reset_index(drop=True)
     if admin.empty:
         return _empty_medication_events()
     admin["source_tables_json"] = dumps_json(["emar"])
@@ -702,6 +1159,9 @@ def extract_hospital_admin_events(
             ]
 
     admin = _attach_hospital_encounter_context(admin, encounter_index=encounter_index)
+    admin = admin.loc[admin["encounter_id"].notna()].copy()
+    if admin.empty:
+        return _empty_medication_events()
     admin["medication_event_id"] = (
         "hospital-admin-"
         + admin["subject_id"].astype(str)
@@ -839,15 +1299,29 @@ def summarize_medication_events(dataframe: pd.DataFrame) -> list[str]:
     ]
 
 
+def summarize_medication_events_metrics(metrics: MedicationEventsQcMetrics) -> list[str]:
+    """Return compact summaries for a streaming-built medication-events artifact."""
+    return [
+        f"rows={metrics.row_count:,}, columns={len(MEDICATION_EVENT_COLUMNS)}",
+        f"unique_subjects={metrics.unique_subject_count:,}",
+        f"home_medrecon_rows={metrics.event_source_category_counts.get('home_medication_reconciliation', 0):,}",
+        f"ed_pyxis_rows={metrics.event_source_category_counts.get('ed_medication_event', 0):,}",
+        f"hospital_order_rows={metrics.event_source_category_counts.get('hospital_medication_order', 0):,}",
+        f"hospital_admin_rows={metrics.event_source_category_counts.get('hospital_administration_event', 0):,}",
+        f"order_enriched_rows={metrics.order_enrichment_applied_count:,}",
+    ]
+
+
 def _attach_ed_encounter_context(
     dataframe: pd.DataFrame,
     *,
     encounter_index: pd.DataFrame,
+    edstays: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    encounter_lookup = encounter_index.loc[
-        :,
-        ["subject_id", "hadm_id", "stay_id", "encounter_id", "encounter_source", "encounter_start", "encounter_end"],
-    ].drop_duplicates(subset=["subject_id", "stay_id"])
+    encounter_lookup = _build_ed_encounter_lookup(
+        encounter_index,
+        edstays=edstays,
+    )
     return dataframe.merge(
         encounter_lookup,
         how="left",
@@ -871,6 +1345,57 @@ def _attach_hospital_encounter_context(
         on=["subject_id", "hadm_id"],
         validate="many_to_one",
     )
+
+
+def _build_ed_encounter_lookup(
+    encounter_index: pd.DataFrame,
+    *,
+    edstays: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "encounter_id",
+        "encounter_source",
+        "encounter_start",
+        "encounter_end",
+    ]
+    ed_only_lookup = encounter_index.loc[
+        (encounter_index["encounter_source"] == "ed_only") & encounter_index["stay_id"].notna(),
+        columns,
+    ].drop_duplicates(subset=["subject_id", "stay_id"])
+    if edstays is None or edstays.empty:
+        return encounter_index.loc[
+            encounter_index["stay_id"].notna(),
+            columns,
+        ].drop_duplicates(subset=["subject_id", "stay_id"])
+
+    linked_stays = edstays.loc[
+        edstays["hadm_id"].notna(),
+        ["subject_id", "hadm_id", "stay_id"],
+    ].drop_duplicates(subset=["subject_id", "stay_id"])
+    linked_encounters = encounter_index.loc[
+        encounter_index["hadm_id"].notna(),
+        ["subject_id", "hadm_id", "encounter_id", "encounter_source", "encounter_start", "encounter_end"],
+    ].drop_duplicates(subset=["subject_id", "hadm_id"])
+    linked_lookup = linked_stays.merge(
+        linked_encounters,
+        how="left",
+        on=["subject_id", "hadm_id"],
+        validate="many_to_one",
+    )
+    linked_lookup = linked_lookup.loc[:, columns]
+
+    lookup_frames = [frame for frame in [linked_lookup, ed_only_lookup] if not frame.empty]
+    if not lookup_frames:
+        return pd.DataFrame(columns=columns)
+    if len(lookup_frames) == 1:
+        lookup = lookup_frames[0].copy()
+    else:
+        lookup = pd.concat(lookup_frames, ignore_index=True, sort=False)
+
+    return lookup.drop_duplicates(subset=["subject_id", "stay_id"]).reset_index(drop=True)
 
 
 def _finalize_medication_events(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -914,6 +1439,112 @@ def _fill_medication_event_defaults(dataframe: pd.DataFrame) -> pd.DataFrame:
         pd.NA,
     )
     return filled
+
+
+def _finalize_medication_events_artifact(
+    dataframe: pd.DataFrame,
+    *,
+    build_run_id: str,
+) -> pd.DataFrame:
+    finalized = dataframe.loc[:, MEDICATION_EVENT_COLUMNS].copy()
+    finalized = _fill_medication_event_defaults(finalized)
+    finalized = infer_home_medication_continuity(finalized)
+    finalized["medication_event_build_run_id"] = build_run_id
+    finalized["medication_event_contract_version"] = MEDICATION_EVENTS_CONTRACT_VERSION
+    finalized = finalized.drop_duplicates(subset=["medication_event_id"]).reset_index(drop=True)
+    finalized = finalized.sort_values(
+        ["subject_id", "encounter_start", "event_time", "medication_normalized"],
+        na_position="last",
+    ).reset_index(drop=True)
+    validate_medication_events_artifact(finalized)
+    return finalized
+
+
+def _stable_sort_frame(dataframe: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    available_columns = [column_name for column_name in columns if column_name in dataframe.columns]
+    if not available_columns:
+        return dataframe
+    return dataframe.sort_values(available_columns, kind="stable", na_position="last")
+
+
+def _subject_partition_series(
+    series: pd.Series,
+    *,
+    subject_partition_count: int,
+) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce").fillna(-1).astype("int64")
+    return numeric.mod(subject_partition_count)
+
+
+def _partition_encounter_index(
+    encounter_index: pd.DataFrame,
+    *,
+    subject_partition_count: int,
+) -> dict[int, pd.DataFrame]:
+    if encounter_index.empty:
+        return {}
+    partitioned = encounter_index.copy()
+    partitioned["_subject_partition"] = _subject_partition_series(
+        partitioned["subject_id"],
+        subject_partition_count=subject_partition_count,
+    )
+    return {
+        int(partition_id): frame.drop(columns="_subject_partition").reset_index(drop=True)
+        for partition_id, frame in partitioned.groupby("_subject_partition", sort=False)
+    }
+
+
+def _partition_parquet_by_subject(
+    *,
+    source_path: Path,
+    columns: list[str],
+    partition_root: Path,
+    subject_partition_count: int,
+    batch_size: int,
+) -> None:
+    import pyarrow.parquet as pq
+
+    partition_root.mkdir(parents=True, exist_ok=True)
+    parquet_file = pq.ParquetFile(source_path)
+    batch_index = 0
+    for batch in parquet_file.iter_batches(columns=columns, batch_size=batch_size):
+        frame = batch.to_pandas()
+        if frame.empty:
+            continue
+        frame["_subject_partition"] = _subject_partition_series(
+            frame["subject_id"],
+            subject_partition_count=subject_partition_count,
+        )
+        for partition_id, partition_frame in frame.groupby("_subject_partition", sort=False):
+            target_dir = partition_root / f"subject_partition={int(partition_id):03d}"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / f"batch-{batch_index:06d}.parquet"
+            partition_frame.drop(columns="_subject_partition").to_parquet(target_path, index=False)
+        batch_index += 1
+
+
+def _load_partition_dataframe(
+    partition_root: Path | None,
+    *,
+    partition_id: int,
+) -> pd.DataFrame | None:
+    if partition_root is None:
+        return None
+    partition_dir = partition_root / f"subject_partition={int(partition_id):03d}"
+    if not partition_dir.exists():
+        return None
+    return pd.read_parquet(partition_dir)
+
+
+def _empty_source_frame(columns: tuple[str, ...]) -> pd.DataFrame:
+    return pd.DataFrame(columns=list(columns))
+
+
+def _prescriptions_columns() -> tuple[str, ...]:
+    for dataset_name, table_name, columns, _ in STREAMING_SOURCE_TABLES:
+        if dataset_name == "clinical" and table_name == "prescriptions":
+            return columns
+    raise RuntimeError("Expected streaming source table spec for clinical.prescriptions.")
 
 
 def _empty_medication_events() -> pd.DataFrame:

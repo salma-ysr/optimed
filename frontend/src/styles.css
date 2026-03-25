@@ -563,6 +563,7 @@ button {
   border-radius: 24px;
   border: 1px solid rgba(18, 57, 85, 0.1);
   box-shadow: 0 18px 40px rgba(32, 68, 98, 0.08);
+  min-width: 0;
 }
 
 .medication-alert-card-high {
@@ -656,6 +657,7 @@ button {
 
 .medication-alert-details {
   margin-top: 10px;
+  min-width: 0;
 }
 
 .medication-alert-section-title {
@@ -705,6 +707,199 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.review-queue-summary-row {
+  margin-top: 14px;
+}
+
+.review-panel {
+  margin-top: 20px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(18, 57, 85, 0.1);
+  min-width: 0;
+}
+
+.review-panel-muted {
+  background: rgba(243, 247, 250, 0.78);
+}
+
+.review-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.review-panel-subtitle {
+  margin: 6px 0 0;
+  color: #617b8b;
+  font-size: 0.84rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-context-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.review-context-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 14px;
+  background: #edf4f8;
+  color: #23475f;
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
+.review-reasons-row {
+  margin-top: 12px;
+}
+
+.review-existing-summary {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #f5faf7;
+  border: 1px solid rgba(13, 107, 95, 0.12);
+  min-width: 0;
+}
+
+.review-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.review-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.review-field {
+  display: grid;
+  gap: 8px;
+}
+
+.review-field span {
+  font-size: 0.88rem;
+  color: #34566c;
+  font-weight: 600;
+}
+
+.review-field input,
+.review-field select,
+.review-field textarea {
+  width: 100%;
+  border: 1px solid rgba(18, 57, 85, 0.14);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #163046;
+}
+
+.segmented-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.segmented-control-wrap {
+  flex-wrap: wrap;
+}
+
+.segment-button {
+  border: 1px solid rgba(18, 57, 85, 0.14);
+  border-radius: 999px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #23475f;
+  cursor: pointer;
+}
+
+.segment-button-active {
+  background: linear-gradient(135deg, #dff2ec, #e7eef8);
+  border-color: rgba(13, 107, 95, 0.24);
+  color: #123856;
+}
+
+.checkbox-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkbox-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(18, 57, 85, 0.12);
+  cursor: pointer;
+  color: #23475f;
+  font-size: 0.84rem;
+}
+
+.checkbox-chip input {
+  margin: 0;
+}
+
+.checkbox-chip-active {
+  background: #e7f4ee;
+  border-color: rgba(13, 107, 95, 0.24);
+}
+
+.review-feedback {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.review-feedback-error {
+  color: #ab3a20;
+}
+
+.review-feedback-success {
+  color: #0d6b5f;
+}
+
+.review-form-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.review-traceability {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 280px;
+}
+
+.review-traceability code {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #eef4f7;
+  color: #23475f;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
 @media (max-width: 900px) {
   .summary-grid,
   .records-grid,
@@ -745,5 +940,13 @@ button {
 
   .medication-alert-score {
     justify-items: start;
+  }
+
+  .review-form-grid,
+  .review-form-actions,
+  .review-panel-header {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
   }
 }

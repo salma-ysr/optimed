@@ -61,6 +61,7 @@ def apply_deprescribing_priority_score(dataframe: pd.DataFrame) -> pd.DataFrame:
     row_scores = scored.apply(_score_row, axis=1, result_type="expand")
     row_scores.columns = [
         "deprescribing_priority_score",
+        "deprescribing_priority_score_level",
         "deprescribing_priority_label",
         "deprescribing_priority_summary_alert",
         "deprescribing_priority_explanation",
@@ -84,19 +85,20 @@ def summarize_scored_cohort(dataframe: pd.DataFrame) -> list[str]:
     ]
 
 
-def _score_row(row: pd.Series) -> tuple[int, str, str, str, str, str, str]:
+def _score_row(row: pd.Series) -> tuple[int, str, str, str, str, str, str, str]:
     """Score a single processed cohort row with bucketed structured outputs."""
     hits = collect_rule_hits(row)
     bucket_scores = score_hits_by_bucket(hits)
     final_score = normalize_bucket_scores(bucket_scores)
-    label = score_to_label(final_score)
+    level = score_to_label(final_score)
     reasons = [hit.clinician_reason for hit in hits]
     summary_alert = score_to_summary_alert(final_score, hits, bucket_scores)
     explanation = "; ".join(reasons) if reasons else "no major structured IPD rule triggered"
     evidence = collect_structured_evidence(hits)
     return (
         final_score,
-        label,
+        level,
+        level,
         summary_alert,
         explanation,
         json.dumps(bucket_scores, sort_keys=True),

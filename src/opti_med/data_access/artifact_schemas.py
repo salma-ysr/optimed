@@ -12,10 +12,17 @@ from opti_med.medication_semantics import FIRST_SCOPE_SUPPORTED_CLASSES
 
 ENCOUNTER_INDEX_CONTRACT_VERSION = "encounter_index.v1"
 MEDICATION_EVENTS_CONTRACT_VERSION = "medication_events.v1"
-ENCOUNTER_MEDICATION_STATE_CONTRACT_VERSION = "encounter_medication_state.v1"
-MEDICATION_RXNORM_MAPPING_CONTRACT_VERSION = "medication_rxnorm_mapping.v1"
-ENCOUNTER_MEDICATION_SEMANTICS_CONTRACT_VERSION = "encounter_medication_semantics.v1"
-ENCOUNTER_MEDICATION_BURDEN_CONTRACT_VERSION = "encounter_medication_burden.v1"
+ENCOUNTER_MEDICATION_STATE_CONTRACT_VERSION = "encounter_medication_state_65plus.v1"
+OLDER_ADULT_ELIGIBILITY_CONTRACT_VERSION = "older_adult_encounter_eligibility.v1"
+MEDICATION_RXNORM_MAPPING_CONTRACT_VERSION = "medication_rxnorm_mapping_65plus.v1"
+ENCOUNTER_MEDICATION_SEMANTICS_CONTRACT_VERSION = "encounter_medication_semantics_65plus.v1"
+ENCOUNTER_MEDICATION_BURDEN_CONTRACT_VERSION = "encounter_medication_burden_65plus.v1"
+ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION = (
+    "encounter_medication_first_scope_65plus.v1"
+)
+ENCOUNTER_MEDICATION_LABELS_V1_FIRST_SCOPE_CONTRACT_VERSION = (
+    "encounter_medication_labels_v1_65plus_first_scope.v1"
+)
 
 ENCOUNTER_INDEX_COLUMNS = [
     "subject_id",
@@ -101,6 +108,8 @@ ENCOUNTER_MEDICATION_STATE_COLUMNS = [
     "stay_id",
     "review_timestamp",
     "review_timestamp_source",
+    "age_proxy",
+    "age_group",
     "review_time_policy_name",
     "review_timestamp_candidate",
     "review_timestamp_candidate_source",
@@ -142,8 +151,27 @@ ENCOUNTER_MEDICATION_STATE_COLUMNS = [
     "encounter_medication_state_contract_version",
 ]
 
+OLDER_ADULT_ELIGIBILITY_COLUMNS = [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "encounter_id",
+    "age_proxy",
+    "age_group",
+    "encounter_source",
+    "eligibility_flag",
+    "eligibility_rule_name",
+    "eligibility_criteria_json",
+    "encounter_index_build_run_id",
+    "encounter_index_contract_version",
+    "older_adult_eligibility_build_run_id",
+    "older_adult_eligibility_contract_version",
+]
+
 MEDICATION_RXNORM_MAPPING_COLUMNS = [
     "medication_query_key",
+    "medication_raw",
+    "medication_normalized",
     "raw_medication_string",
     "normalized_query_string",
     "lookup_mode",
@@ -162,6 +190,7 @@ MEDICATION_RXNORM_MAPPING_COLUMNS = [
     "candidate_match_count",
     "candidate_rxcuis_json",
     "ambiguity_note",
+    "unresolved_reason",
     "class_assignment_status",
     "class_ids_json",
     "class_labels_json",
@@ -183,13 +212,21 @@ ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS = [
     "stay_id",
     "review_timestamp",
     "review_timestamp_source",
+    "age_proxy",
+    "age_group",
     "medication_standardized",
+    "medication_standardized_source",
     "medication_normalized",
     "medication_raw",
     "rxnorm_rxcui",
+    "rxnorm_matched_term",
+    "rxnorm_term_type",
     "ingredient_standardized",
     "ingredient_resolution_status",
     "mapping_confidence",
+    "ambiguous_mapping_flag",
+    "mapping_candidate_count",
+    "medication_mapping_lookup_strategy",
     "medication_class_standardized",
     "class_assignment_status",
     "class_system",
@@ -218,6 +255,8 @@ ENCOUNTER_MEDICATION_BURDEN_COLUMNS = [
     "hadm_id",
     "stay_id",
     "review_timestamp",
+    "age_proxy",
+    "age_group",
     "medication_standardized",
     "medication_class_standardized",
     "medication_status_at_review",
@@ -259,6 +298,73 @@ ENCOUNTER_MEDICATION_BURDEN_COLUMNS = [
     "renal_dose_mismatch_ready_flag",
     "encounter_medication_burden_build_run_id",
     "encounter_medication_burden_contract_version",
+]
+
+ENCOUNTER_MEDICATION_FIRST_SCOPE_COLUMNS = (
+    ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS
+    + [
+        column_name
+        for column_name in ENCOUNTER_MEDICATION_BURDEN_COLUMNS
+        if column_name not in ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS
+    ]
+    + [
+        "encounter_medication_first_scope_build_run_id",
+        "encounter_medication_first_scope_contract_version",
+    ]
+)
+
+ENCOUNTER_MEDICATION_LABELS_V1_FIRST_SCOPE_COLUMNS = [
+    "subject_id",
+    "encounter_id",
+    "hadm_id",
+    "stay_id",
+    "review_timestamp",
+    "review_timestamp_source",
+    "review_time_policy_name",
+    "review_time_validated_flag",
+    "review_time_capped_to_discharge_flag",
+    "discharge_boundary",
+    "age_proxy",
+    "age_group",
+    "medication_standardized",
+    "medication_class_standardized",
+    "ingredient_standardized",
+    "medication_status_at_review",
+    "active_at_review_flag",
+    "scheduled_vs_prn",
+    "dose_value",
+    "dose_unit",
+    "route",
+    "frequency",
+    "selected_medication_event_id",
+    "selected_medication_event_type",
+    "primary_action_label",
+    "primary_action_label_reason",
+    "unknown_or_insufficient_evidence_flag",
+    "unknown_or_insufficient_evidence_reason",
+    "window_censored_flag",
+    "renal_deterioration",
+    "hemodynamic_instability",
+    "electrolyte_instability",
+    "oversedation_respiratory_risk",
+    "acute_life_sustaining_medication",
+    "fundamentally_different_deprescribing_logic",
+    "excluded_from_primary_training",
+    "downweight_recommended",
+    "post_review_same_medication_event_count",
+    "post_review_same_medication_order_count",
+    "post_review_same_medication_admin_count",
+    "post_review_stop_evidence_flag",
+    "post_review_deintensification_evidence_flag",
+    "post_review_continuation_evidence_flag",
+    "primary_action_evidence_json",
+    "auxiliary_harm_evidence_json",
+    "exclusion_evidence_json",
+    "label_window_json",
+    "label_provenance_json",
+    "label_source_tables_json",
+    "encounter_medication_labels_v1_build_run_id",
+    "encounter_medication_labels_v1_contract_version",
 ]
 
 
@@ -439,6 +545,8 @@ def validate_encounter_medication_state_artifact(dataframe: pd.DataFrame) -> Non
             "encounter_id",
             "review_timestamp",
             "review_timestamp_source",
+            "age_proxy",
+            "age_group",
             "review_time_policy_name",
             "medication_standardized",
             "medication_standardized_source",
@@ -448,6 +556,7 @@ def validate_encounter_medication_state_artifact(dataframe: pd.DataFrame) -> Non
             "selected_medication_event_id",
             "selected_medication_event_type",
             "encounter_medication_state_build_run_id",
+            "encounter_medication_state_contract_version",
         ],
         artifact_name="encounter_medication_state",
     )
@@ -591,6 +700,10 @@ def validate_encounter_medication_state_artifact(dataframe: pd.DataFrame) -> Non
         raise DataLoadError(
             "Encounter-medication-state artifact must keep active_at_review_flag aligned with medication_status_at_review."
         )
+    _assert_older_adult_age_context(
+        dataframe,
+        artifact_name="encounter_medication_state",
+    )
     _assert_timestamp_not_after_boundary(
         dataframe,
         timestamp_column="review_timestamp",
@@ -607,6 +720,82 @@ def validate_encounter_medication_state_artifact(dataframe: pd.DataFrame) -> Non
         )
 
 
+def validate_older_adult_eligibility_artifact(dataframe: pd.DataFrame) -> None:
+    """Assert that the older-adult encounter-eligibility artifact matches the expected contract."""
+    _assert_required_columns(
+        dataframe,
+        required_columns=OLDER_ADULT_ELIGIBILITY_COLUMNS,
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_non_null(
+        dataframe,
+        columns=[
+            "subject_id",
+            "encounter_id",
+            "age_proxy",
+            "age_group",
+            "encounter_source",
+            "eligibility_flag",
+            "eligibility_rule_name",
+            "eligibility_criteria_json",
+            "encounter_index_build_run_id",
+            "encounter_index_contract_version",
+            "older_adult_eligibility_build_run_id",
+            "older_adult_eligibility_contract_version",
+        ],
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_unique(
+        dataframe,
+        key_columns=["encounter_id"],
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="encounter_source",
+        allowed_values={"ed_only", "ed_to_inpatient", "hospital_only"},
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="eligibility_rule_name",
+        allowed_values={"age_proxy_gte_65"},
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="encounter_index_contract_version",
+        allowed_values={ENCOUNTER_INDEX_CONTRACT_VERSION},
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_json_column(
+        dataframe,
+        "eligibility_criteria_json",
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_flag_column(
+        dataframe,
+        "eligibility_flag",
+        artifact_name="eligible_encounters_65plus",
+    )
+    _assert_older_adult_age_context(
+        dataframe,
+        artifact_name="eligible_encounters_65plus",
+    )
+    if not pd.to_numeric(dataframe["eligibility_flag"], errors="coerce").fillna(0).eq(1).all():
+        raise DataLoadError(
+            "Artifact 'eligible_encounters_65plus' must keep eligibility_flag=1 for every row."
+        )
+    if (
+        dataframe["older_adult_eligibility_contract_version"].dropna().astype(str)
+        != OLDER_ADULT_ELIGIBILITY_CONTRACT_VERSION
+    ).any():
+        raise DataLoadError(
+            "Older-adult encounter-eligibility artifact must use contract version "
+            f"'{OLDER_ADULT_ELIGIBILITY_CONTRACT_VERSION}'."
+        )
+
+
 def validate_medication_rxnorm_mapping_artifact(dataframe: pd.DataFrame) -> None:
     """Assert that the medication RxNorm mapping artifact matches the expected contract."""
     _assert_required_columns(
@@ -618,6 +807,8 @@ def validate_medication_rxnorm_mapping_artifact(dataframe: pd.DataFrame) -> None
         dataframe,
         columns=[
             "medication_query_key",
+            "medication_raw",
+            "medication_normalized",
             "normalized_query_string",
             "lookup_mode",
             "lookup_strategy_used",
@@ -741,7 +932,10 @@ def validate_encounter_medication_semantics_artifact(dataframe: pd.DataFrame) ->
             "subject_id",
             "encounter_id",
             "review_timestamp",
+            "age_proxy",
+            "age_group",
             "medication_standardized",
+            "medication_standardized_source",
             "ingredient_resolution_status",
             "mapping_confidence",
             "medication_class_standardized",
@@ -751,6 +945,7 @@ def validate_encounter_medication_semantics_artifact(dataframe: pd.DataFrame) ->
             "first_scope_supported_class_flag",
             "active_at_review_flag",
             "encounter_medication_semantics_build_run_id",
+            "encounter_medication_semantics_contract_version",
         ],
         artifact_name="encounter_medication_semantics",
     )
@@ -792,11 +987,26 @@ def validate_encounter_medication_semantics_artifact(dataframe: pd.DataFrame) ->
         },
         artifact_name="encounter_medication_semantics",
     )
+    _assert_older_adult_age_context(
+        dataframe,
+        artifact_name="encounter_medication_semantics",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="medication_standardized_source",
+        allowed_values={
+            "rxnorm_ingredient",
+            "rxnorm_term",
+            "normalized_text_fallback",
+        },
+        artifact_name="encounter_medication_semantics",
+    )
     for column_name in [
         "first_scope_supported_class_flag",
         "active_at_review_flag",
         "continued_from_home_inferred",
         "newly_started_during_encounter_inferred",
+        "ambiguous_mapping_flag",
         "benzodiazepine_heuristic_flag",
         "opioid_heuristic_flag",
         "anticholinergic_heuristic_flag",
@@ -833,6 +1043,8 @@ def validate_encounter_medication_burden_artifact(dataframe: pd.DataFrame) -> No
             "subject_id",
             "encounter_id",
             "review_timestamp",
+            "age_proxy",
+            "age_group",
             "medication_standardized",
             "medication_class_standardized",
             "active_at_review_flag",
@@ -879,6 +1091,10 @@ def validate_encounter_medication_burden_artifact(dataframe: pd.DataFrame) -> No
             "pre_admission_only",
             "activity_uncertain_at_review_time",
         },
+        artifact_name="encounter_medication_burden",
+    )
+    _assert_older_adult_age_context(
+        dataframe,
         artifact_name="encounter_medication_burden",
     )
     _assert_allowed_values(
@@ -955,6 +1171,310 @@ def validate_encounter_medication_burden_artifact(dataframe: pd.DataFrame) -> No
         raise DataLoadError(
             "Encounter-medication-burden artifact must use contract version "
             f"'{ENCOUNTER_MEDICATION_BURDEN_CONTRACT_VERSION}'."
+        )
+
+
+def validate_encounter_medication_first_scope_artifact(dataframe: pd.DataFrame) -> None:
+    """Assert that the first-scope 65+ artifact matches the expected contract."""
+    _assert_required_columns(
+        dataframe,
+        required_columns=ENCOUNTER_MEDICATION_FIRST_SCOPE_COLUMNS,
+        artifact_name="encounter_medication_first_scope",
+    )
+    validate_encounter_medication_semantics_artifact(
+        dataframe.loc[:, ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS].copy()
+    )
+    validate_encounter_medication_burden_artifact(
+        dataframe.loc[:, ENCOUNTER_MEDICATION_BURDEN_COLUMNS].copy()
+    )
+    _assert_non_null(
+        dataframe,
+        columns=[
+            "encounter_medication_first_scope_build_run_id",
+            "encounter_medication_first_scope_contract_version",
+        ],
+        artifact_name="encounter_medication_first_scope",
+    )
+    supported_flag = (
+        pd.to_numeric(dataframe["first_scope_supported_class_flag"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    if not supported_flag.eq(1).all():
+        raise DataLoadError(
+            "Encounter-medication-first-scope artifact must keep first_scope_supported_class_flag=1 for every row."
+        )
+    _assert_allowed_values(
+        dataframe,
+        column_name="medication_class_standardized",
+        allowed_values=set(FIRST_SCOPE_SUPPORTED_CLASSES),
+        artifact_name="encounter_medication_first_scope",
+    )
+    if (
+        dataframe["encounter_medication_first_scope_contract_version"]
+        .dropna()
+        .astype(str)
+        != ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION
+    ).any():
+        raise DataLoadError(
+            "Encounter-medication-first-scope artifact must use contract version "
+            f"'{ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION}'."
+        )
+
+
+def validate_encounter_medication_labels_v1_first_scope_artifact(
+    dataframe: pd.DataFrame,
+) -> None:
+    """Assert that the first-scope Labels v1 artifact matches the expected contract."""
+    _assert_required_columns(
+        dataframe,
+        required_columns=ENCOUNTER_MEDICATION_LABELS_V1_FIRST_SCOPE_COLUMNS,
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_non_null(
+        dataframe,
+        columns=[
+            "subject_id",
+            "encounter_id",
+            "review_timestamp",
+            "review_timestamp_source",
+            "review_time_policy_name",
+            "review_time_validated_flag",
+            "review_time_capped_to_discharge_flag",
+            "age_proxy",
+            "age_group",
+            "medication_standardized",
+            "medication_class_standardized",
+            "medication_status_at_review",
+            "active_at_review_flag",
+            "scheduled_vs_prn",
+            "selected_medication_event_id",
+            "selected_medication_event_type",
+            "primary_action_label",
+            "primary_action_label_reason",
+            "unknown_or_insufficient_evidence_flag",
+            "window_censored_flag",
+            "acute_life_sustaining_medication",
+            "fundamentally_different_deprescribing_logic",
+            "excluded_from_primary_training",
+            "downweight_recommended",
+            "post_review_same_medication_event_count",
+            "post_review_same_medication_order_count",
+            "post_review_same_medication_admin_count",
+            "post_review_stop_evidence_flag",
+            "post_review_deintensification_evidence_flag",
+            "post_review_continuation_evidence_flag",
+            "primary_action_evidence_json",
+            "auxiliary_harm_evidence_json",
+            "exclusion_evidence_json",
+            "label_window_json",
+            "label_provenance_json",
+            "label_source_tables_json",
+            "encounter_medication_labels_v1_build_run_id",
+            "encounter_medication_labels_v1_contract_version",
+        ],
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_unique(
+        dataframe,
+        key_columns=[
+            "subject_id",
+            "encounter_id",
+            "medication_standardized",
+            "review_timestamp",
+        ],
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="review_timestamp_source",
+        allowed_values={
+            "medication_administration",
+            "medication_order",
+            "lab",
+            "vitals",
+            "encounter_end",
+            "encounter_boundary",
+        },
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="review_time_policy_name",
+        allowed_values={
+            "latest_available",
+            "bounded_latest_available",
+            "discharge_capped_latest_available",
+        },
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="medication_class_standardized",
+        allowed_values=set(FIRST_SCOPE_SUPPORTED_CLASSES),
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="medication_status_at_review",
+        allowed_values={
+            "active_at_review_time",
+            "inactive_before_review_time",
+            "pre_admission_only",
+            "activity_uncertain_at_review_time",
+        },
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="scheduled_vs_prn",
+        allowed_values={"scheduled", "prn", "unknown"},
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_allowed_values(
+        dataframe,
+        column_name="primary_action_label",
+        allowed_values={
+            "stopped_or_deintensified_before_discharge",
+            "no_clear_stop_or_deintensification_before_discharge",
+            "action_undetermined",
+            "window_censored",
+        },
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    for column_name in [
+        "primary_action_evidence_json",
+        "auxiliary_harm_evidence_json",
+        "exclusion_evidence_json",
+        "label_window_json",
+        "label_provenance_json",
+        "label_source_tables_json",
+    ]:
+        _assert_json_column(
+            dataframe,
+            column_name,
+            artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+        )
+    for column_name in [
+        "review_time_validated_flag",
+        "review_time_capped_to_discharge_flag",
+        "active_at_review_flag",
+        "unknown_or_insufficient_evidence_flag",
+        "window_censored_flag",
+        "acute_life_sustaining_medication",
+        "fundamentally_different_deprescribing_logic",
+        "excluded_from_primary_training",
+        "downweight_recommended",
+        "post_review_stop_evidence_flag",
+        "post_review_deintensification_evidence_flag",
+        "post_review_continuation_evidence_flag",
+    ]:
+        _assert_flag_column(
+            dataframe,
+            column_name,
+            artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+        )
+    for column_name in [
+        "renal_deterioration",
+        "hemodynamic_instability",
+        "electrolyte_instability",
+        "oversedation_respiratory_risk",
+    ]:
+        _assert_nullable_flag_column(
+            dataframe,
+            column_name,
+            artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+        )
+    for column_name in [
+        "post_review_same_medication_event_count",
+        "post_review_same_medication_order_count",
+        "post_review_same_medication_admin_count",
+    ]:
+        values = pd.to_numeric(dataframe[column_name], errors="coerce")
+        if values.isna().any() or (values < 0).any():
+            raise DataLoadError(
+                "Artifact 'encounter_medication_labels_v1_65plus_first_scope' has invalid "
+                f"non-negative count values in '{column_name}'."
+            )
+    unknown_flag = (
+        pd.to_numeric(dataframe["unknown_or_insufficient_evidence_flag"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    undetermined_label = dataframe["primary_action_label"].astype(str).eq("action_undetermined")
+    if not unknown_flag.eq(undetermined_label.astype(int)).all():
+        raise DataLoadError(
+            "Labels v1 artifact must keep unknown_or_insufficient_evidence_flag aligned "
+            "with primary_action_label='action_undetermined'."
+        )
+    censored_flag = (
+        pd.to_numeric(dataframe["window_censored_flag"], errors="coerce").fillna(0).astype(int)
+    )
+    censored_label = dataframe["primary_action_label"].astype(str).eq("window_censored")
+    if not censored_flag.eq(censored_label.astype(int)).all():
+        raise DataLoadError(
+            "Labels v1 artifact must keep window_censored_flag aligned with "
+            "primary_action_label='window_censored'."
+        )
+    acute_flag = (
+        pd.to_numeric(dataframe["acute_life_sustaining_medication"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    logic_flag = (
+        pd.to_numeric(dataframe["fundamentally_different_deprescribing_logic"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    excluded_flag = (
+        pd.to_numeric(dataframe["excluded_from_primary_training"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    if not excluded_flag.ge(pd.concat([acute_flag, logic_flag], axis=1).max(axis=1)).all():
+        raise DataLoadError(
+            "Labels v1 artifact must keep excluded_from_primary_training set when any "
+            "hard exclusion flag is present."
+        )
+    _assert_older_adult_age_context(
+        dataframe,
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    _assert_timestamp_not_after_boundary(
+        dataframe,
+        timestamp_column="review_timestamp",
+        boundary_column="discharge_boundary",
+        artifact_name="encounter_medication_labels_v1_65plus_first_scope",
+    )
+    if (
+        dataframe["encounter_medication_labels_v1_contract_version"].dropna().astype(str)
+        != ENCOUNTER_MEDICATION_LABELS_V1_FIRST_SCOPE_CONTRACT_VERSION
+    ).any():
+        raise DataLoadError(
+            "Labels v1 artifact must use contract version "
+            f"'{ENCOUNTER_MEDICATION_LABELS_V1_FIRST_SCOPE_CONTRACT_VERSION}'."
+        )
+
+
+def _assert_older_adult_age_context(
+    dataframe: pd.DataFrame,
+    *,
+    artifact_name: str,
+) -> None:
+    _assert_allowed_values(
+        dataframe,
+        column_name="age_group",
+        allowed_values={"65-74", "75-84", "85+"},
+        artifact_name=artifact_name,
+    )
+    age_proxy_numeric = pd.to_numeric(dataframe["age_proxy"], errors="coerce")
+    if age_proxy_numeric.isna().any():
+        raise DataLoadError(
+            f"Artifact '{artifact_name}' has non-numeric values in 'age_proxy'."
+        )
+    if (age_proxy_numeric < 65).any():
+        raise DataLoadError(
+            f"Artifact '{artifact_name}' includes rows with age_proxy < 65."
         )
 
 
@@ -1047,6 +1567,20 @@ def _assert_flag_column(
     if not values.issubset({0, 1}):
         raise DataLoadError(
             f"Artifact '{artifact_name}' has non-binary values in flag column '{column_name}'."
+        )
+
+
+def _assert_nullable_flag_column(
+    dataframe: pd.DataFrame,
+    column_name: str,
+    *,
+    artifact_name: str,
+) -> None:
+    values = pd.to_numeric(dataframe[column_name], errors="coerce")
+    non_null_values = values[dataframe[column_name].notna()]
+    if non_null_values.isna().any() or not set(non_null_values.astype(int).tolist()).issubset({0, 1}):
+        raise DataLoadError(
+            f"Artifact '{artifact_name}' has non-binary values in nullable flag column '{column_name}'."
         )
 
 

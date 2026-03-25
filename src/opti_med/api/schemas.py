@@ -310,6 +310,109 @@ class ProblemFlash(BaseModel):
     reason: str
 
 
+class ClinicianReviewRecord(BaseModel):
+    """Latest clinician review state for one analytical-grain medication row."""
+
+    subject_id: int
+    encounter_id: str
+    hadm_id: int | None = None
+    stay_id: int | None = None
+    medication_standardized: str
+    medication_normalized: str | None = None
+    review_timestamp: str
+    modeling__row_id: str | None = None
+    review_submission_id: str
+    review_version: int
+    review_artifact_version: str
+    review_submission_timestamp: str
+    reviewer_id: str
+    label__clinician_priority_level: Literal["low", "medium", "high"]
+    label__clinician_priority_score: float | None = None
+    label__clinician_priority_score_level: Literal["low", "medium", "high"] | None = None
+    label__clinician_review_status: Literal[
+        "reviewed",
+        "uncertain",
+        "insufficient_context",
+        "skip",
+    ]
+    label__clinician_reason_tags: list[str] = Field(default_factory=list)
+    label__clinician_note: str | None = None
+    label__clinician_reviewed_flag: int
+    label__clinician_suggested_action: Literal[
+        "keep",
+        "monitor",
+        "reconsider",
+        "deprescribe_candidate",
+        "needs_more_info",
+    ] | None = None
+    review_provenance_json: dict[str, object] | None = None
+
+
+class ClinicianReviewSubmissionRequest(BaseModel):
+    """Clinician review submission payload posted from the dossier UI."""
+
+    subject_id: int
+    encounter_id: str
+    hadm_id: int | None = None
+    stay_id: int | None = None
+    medication_standardized: str
+    review_timestamp: str
+    modeling__row_id: str | None = None
+    reviewer_id: str | None = None
+    label__clinician_priority_level: Literal["low", "medium", "high"]
+    label__clinician_priority_score: float | None = Field(default=None, ge=0, le=10)
+    label__clinician_review_status: Literal[
+        "reviewed",
+        "uncertain",
+        "insufficient_context",
+        "skip",
+    ]
+    label__clinician_reason_tags: list[str] = Field(default_factory=list)
+    label__clinician_note: str | None = None
+    label__clinician_suggested_action: Literal[
+        "keep",
+        "monitor",
+        "reconsider",
+        "deprescribe_candidate",
+        "needs_more_info",
+    ] | None = None
+
+
+class ReviewQueueSummary(BaseModel):
+    """Simple review-queue counts for one patient dossier."""
+
+    reviewable_rows: int = 0
+    reviewed_rows: int = 0
+    unreviewed_rows: int = 0
+    priority_rows: int = 0
+    disagreement_candidate_rows: int = 0
+
+
+class ClinicianReviewWorkflowReport(BaseModel):
+    """Compact structured report for the Phase 5 review workflow."""
+
+    contract_version: str
+    generated_at: str
+    phase_scope_statement: str
+    artifact_paths: dict[str, str]
+    reviewable_row_count: int
+    clinician_reviewed_row_count: int
+    required_level_populated_count: int
+    numeric_score_populated_count: int
+    reason_tag_row_coverage_count: int
+    priority_level_frequencies: dict[str, int]
+    reason_tag_frequencies: dict[str, int]
+    review_status_frequencies: dict[str, int]
+    traceability_validation: dict[str, int]
+
+
+class ClinicianReviewSubmissionResponse(BaseModel):
+    """Response returned after saving a clinician review."""
+
+    review: ClinicianReviewRecord
+    workflow_report: ClinicianReviewWorkflowReport
+
+
 class PatientMedicationCard(BaseModel):
     """Ranked patient-centered medication card."""
 
@@ -347,6 +450,17 @@ class PatientMedicationCard(BaseModel):
     review_timestamp: str | None = None
     review_timestamp_source: str | None = None
     priority_score_source: str | None = None
+    medication_standardized: str | None = None
+    modeling__row_id: str | None = None
+    first_scope_supported_class_flag: int | None = None
+    benchmark__current_rule_score: float | None = None
+    benchmark__current_rule_score_level: Literal["low", "medium", "high"] | None = None
+    benchmark__current_rule_available_flag: int | None = None
+    benchmark__medication_class_only_medication_class_standardized: str | None = None
+    reviewable_flag: bool = False
+    review_queue_priority: str | None = None
+    review_queue_reasons: list[str] = Field(default_factory=list)
+    clinician_review: ClinicianReviewRecord | None = None
     # Reserved for future model output. These stay null until a separate ML layer is wired in.
     ml_priority_score: float | None = None
     ml_priority_rank_within_encounter: int | None = None
@@ -381,6 +495,7 @@ class PatientDetailResponse(BaseModel):
     top_problem_flashes: list[ProblemFlash]
     flagged_medication_count: int
     medication_card_count: int
+    review_queue_summary: ReviewQueueSummary | None = None
     # These right-rail sections are explicit placeholders today. The current backend does not
     # derive them from saved artifacts or model output yet.
     time_to_benefit_summary: str | None = None

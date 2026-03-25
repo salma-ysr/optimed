@@ -10,17 +10,21 @@ import pandas as pd
 
 from opti_med.config import Settings
 from opti_med.data_access.artifact_schemas import (
+    ENCOUNTER_MEDICATION_FIRST_SCOPE_COLUMNS,
+    ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION,
     ENCOUNTER_MEDICATION_BURDEN_COLUMNS,
     ENCOUNTER_MEDICATION_BURDEN_CONTRACT_VERSION,
     ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS,
     ENCOUNTER_MEDICATION_SEMANTICS_CONTRACT_VERSION,
     validate_encounter_index_artifact,
     validate_encounter_medication_burden_artifact,
+    validate_encounter_medication_first_scope_artifact,
     validate_encounter_medication_semantics_artifact,
     validate_encounter_medication_state_artifact,
     validate_medication_events_artifact,
     validate_medication_rxnorm_mapping_artifact,
 )
+from opti_med.data_access.exceptions import DataLoadError
 from opti_med.data_access.encounter_medication_state import (
     apply_medication_rxnorm_mapping_to_events,
 )
@@ -87,7 +91,7 @@ class EncounterMedicationScopeArtifactsBuilder:
         encounter_medication_state = (
             encounter_medication_state
             if encounter_medication_state is not None
-            else self._load_required_parquet(self.settings.encounter_medication_state_output_path)
+            else self._load_preferred_encounter_medication_state()
         )
         medication_events = (
             medication_events
@@ -157,6 +161,12 @@ class EncounterMedicationScopeArtifactsBuilder:
         if not path.exists():
             raise FileNotFoundError(f"Expected analytical artifact at '{path}', but it does not exist.")
         return pd.read_parquet(path)
+
+    def _load_preferred_encounter_medication_state(self) -> pd.DataFrame:
+        rxnorm_state_path = self.settings.encounter_medication_state_rxnorm_output_path
+        if rxnorm_state_path.exists():
+            return self._load_required_parquet(rxnorm_state_path)
+        return self._load_required_parquet(self.settings.encounter_medication_state_output_path)
 
 
 def build_encounter_medication_semantics(
@@ -336,6 +346,8 @@ def build_encounter_medication_burden(
                 "hadm_id": row.get("hadm_id"),
                 "stay_id": row.get("stay_id"),
                 "review_timestamp": row["review_timestamp"],
+                "age_proxy": row.get("age_proxy"),
+                "age_group": row.get("age_group"),
                 "medication_standardized": medication_standardized,
                 "medication_class_standardized": row.get("medication_class_standardized")
                 or "unresolved",
@@ -408,6 +420,59 @@ def build_encounter_medication_burden(
     return burden
 
 
+def build_encounter_medication_first_scope(
+    *,
+    encounter_medication_semantics: pd.DataFrame,
+    encounter_medication_burden: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build the canonical supported-class subset from full 65+ semantics and burden artifacts."""
+    validate_encounter_medication_semantics_artifact(encounter_medication_semantics)
+    validate_encounter_medication_burden_artifact(encounter_medication_burden)
+    if encounter_medication_semantics.empty:
+        return pd.DataFrame(columns=ENCOUNTER_MEDICATION_FIRST_SCOPE_COLUMNS)
+
+    key_columns = [
+        "subject_id",
+        "encounter_id",
+        "medication_standardized",
+        "review_timestamp",
+    ]
+    burden_only_columns = [
+        column_name
+        for column_name in ENCOUNTER_MEDICATION_BURDEN_COLUMNS
+        if column_name not in ENCOUNTER_MEDICATION_SEMANTICS_COLUMNS
+    ]
+    merged = encounter_medication_semantics.merge(
+        encounter_medication_burden.loc[:, key_columns + burden_only_columns].copy(),
+        how="outer",
+        on=key_columns,
+        validate="one_to_one",
+        indicator=True,
+    )
+    if not merged["_merge"].eq("both").all():
+        unmatched_rows = int((merged["_merge"] != "both").sum())
+        raise DataLoadError(
+            "Encounter-medication first-scope build requires one-to-one aligned full semantics "
+            f"and burden artifacts, but found {unmatched_rows:,} unmatched rows."
+        )
+    merged = merged.drop(columns=["_merge"])
+    first_scope = merged.loc[
+        merged["medication_class_standardized"].isin(FIRST_SCOPE_SUPPORTED_CLASSES)
+    ].copy()
+    build_run_id = f"encounter-medication-first-scope-{uuid4().hex[:12]}"
+    first_scope["encounter_medication_first_scope_build_run_id"] = build_run_id
+    first_scope["encounter_medication_first_scope_contract_version"] = (
+        ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION
+    )
+    first_scope = first_scope.loc[:, ENCOUNTER_MEDICATION_FIRST_SCOPE_COLUMNS].copy()
+    first_scope = first_scope.sort_values(
+        ["subject_id", "encounter_id", "review_timestamp", "medication_standardized"],
+        na_position="last",
+    ).reset_index(drop=True)
+    validate_encounter_medication_first_scope_artifact(first_scope)
+    return first_scope
+
+
 def calculate_first_scope_qc_metrics(
     *,
     encounter_medication_semantics: pd.DataFrame,
@@ -475,6 +540,47 @@ def calculate_first_scope_qc_metrics(
     }
 
 
+def calculate_first_scope_subset_metrics(
+    *,
+    encounter_medication_first_scope: pd.DataFrame,
+) -> dict[str, object]:
+    """Calculate compact metrics for the canonical supported-class subset artifact."""
+    validate_encounter_medication_first_scope_artifact(encounter_medication_first_scope)
+    active_rows = encounter_medication_first_scope.loc[
+        encounter_medication_first_scope["active_at_review_flag"] == 1
+    ].copy()
+    return {
+        "row_count": int(len(encounter_medication_first_scope)),
+        "active_row_count": int(len(active_rows)),
+        "unique_subject_count": int(
+            encounter_medication_first_scope["subject_id"].nunique(dropna=True)
+        ),
+        "unique_encounter_count": int(
+            encounter_medication_first_scope["encounter_id"].nunique(dropna=True)
+        ),
+        "row_counts_by_class": {
+            str(key): int(value)
+            for key, value in encounter_medication_first_scope["medication_class_standardized"]
+            .fillna("unresolved")
+            .astype(str)
+            .value_counts(dropna=False)
+            .sort_index()
+            .to_dict()
+            .items()
+        },
+        "active_row_counts_by_class": {
+            str(key): int(value)
+            for key, value in active_rows["medication_class_standardized"]
+            .fillna("unresolved")
+            .astype(str)
+            .value_counts(dropna=False)
+            .sort_index()
+            .to_dict()
+            .items()
+        },
+    }
+
+
 def summarize_first_scope_artifacts(
     *,
     encounter_medication_semantics: pd.DataFrame,
@@ -514,6 +620,34 @@ def summarize_first_scope_artifacts(
         f"groups:{metrics['exact_duplicate_therapy_signal_groups']:,}"
     )
     return lines
+
+
+def summarize_encounter_medication_first_scope(
+    *,
+    encounter_medication_first_scope: pd.DataFrame,
+) -> list[str]:
+    """Return compact summary lines for the canonical supported-class subset artifact."""
+    metrics = calculate_first_scope_subset_metrics(
+        encounter_medication_first_scope=encounter_medication_first_scope,
+    )
+    class_counts = ", ".join(
+        f"{class_name}={count:,}"
+        for class_name, count in metrics["row_counts_by_class"].items()
+    ) or "none"
+    active_class_counts = ", ".join(
+        f"{class_name}={count:,}"
+        for class_name, count in metrics["active_row_counts_by_class"].items()
+    ) or "none"
+    return [
+        (
+            "rows="
+            f"{metrics['row_count']:,}, active_rows={metrics['active_row_count']:,}, "
+            f"subjects={metrics['unique_subject_count']:,}, "
+            f"encounters={metrics['unique_encounter_count']:,}"
+        ),
+        f"row_counts_by_class={class_counts}",
+        f"active_row_counts_by_class={active_class_counts}",
+    ]
 
 
 def _class_assignment_status_from_state_row(row: pd.Series) -> str:

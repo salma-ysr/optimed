@@ -127,7 +127,8 @@ class RxNormApiClient:
     ) -> list[dict[str, object]]:
         payload = self._request_json(
             f"rxcui/{rxcui}/related.json",
-            {"tty": "+".join(tty)},
+            # RxNav expects a space-delimited TTY list, which urlencode renders as "+".
+            {"tty": " ".join(tty)},
         )
         related_group = payload.get("relatedGroup", {})
         if not isinstance(related_group, dict):
@@ -318,13 +319,26 @@ class RxNormIdentityResolver:
         lookup_strategy_used: str,
         approximate_rank: int | None,
     ) -> MedicationIdentityResolution:
-        resolved_candidates = [
-            self._resolve_rxcui(rxcui)
-            for rxcui in candidate_rxcuis
-        ]
+        candidate_resolution_error: RxNormApiError | None = None
+        resolved_candidates: list[ResolvedRxNormConcept | None] = []
+        for rxcui in candidate_rxcuis:
+            try:
+                resolved_candidates.append(self._resolve_rxcui(rxcui))
+            except RxNormApiError as exc:
+                candidate_resolution_error = exc
         resolved_candidates = [
             candidate for candidate in resolved_candidates if candidate is not None
         ]
+        if not resolved_candidates and candidate_resolution_error is not None:
+            return _unresolved_resolution(
+                raw_name=raw_name,
+                normalized_query=normalized_query,
+                lookup_strategy_used=lookup_strategy_used,
+                ingredient_resolution_status="unresolved_api_error",
+                candidate_rxcuis=candidate_rxcuis,
+                ambiguity_note=str(candidate_resolution_error),
+                approximate_rank=approximate_rank,
+            )
         if not resolved_candidates:
             return _unresolved_resolution(
                 raw_name=raw_name,

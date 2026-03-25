@@ -153,6 +153,8 @@ def select_review_timestamp_for_encounter(
     labevents: pd.DataFrame | None = None,
     triage: pd.DataFrame | None = None,
     vitalsign: pd.DataFrame | None = None,
+    latest_lab_timestamp_by_hadm_id: dict[int, pd.Timestamp] | None = None,
+    latest_vitals_timestamp_by_subject_stay: dict[tuple[int, int], pd.Timestamp] | None = None,
 ) -> pd.Timestamp | pd.NaT:
     """Select the dossier review timestamp using only encounter-local evidence.
 
@@ -168,8 +170,17 @@ def select_review_timestamp_for_encounter(
         for candidate in [
             _latest_medication_administration_timestamp(row, medication_events),
             _latest_medication_order_timestamp(row, medication_events),
-            _latest_lab_timestamp(row, labevents),
-            _latest_vitals_timestamp(row, triage=triage, vitalsign=vitalsign),
+            _latest_lab_timestamp(
+                row,
+                labevents,
+                latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+            ),
+            _latest_vitals_timestamp(
+                row,
+                triage=triage,
+                vitalsign=vitalsign,
+                latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
+            ),
             _latest_encounter_boundary_timestamp(row),
         ]:
             if pd.notna(candidate):
@@ -197,6 +208,8 @@ def select_review_timestamp_metadata_for_encounter(
     labevents: pd.DataFrame | None = None,
     triage: pd.DataFrame | None = None,
     vitalsign: pd.DataFrame | None = None,
+    latest_lab_timestamp_by_hadm_id: dict[int, pd.Timestamp] | None = None,
+    latest_vitals_timestamp_by_subject_stay: dict[tuple[int, int], pd.Timestamp] | None = None,
 ) -> tuple[pd.Timestamp | pd.NaT, str]:
     """Return both the encounter-relative review timestamp and the winning evidence source."""
     row = encounter_row if isinstance(encounter_row, dict) else encounter_row.to_dict()
@@ -210,10 +223,22 @@ def select_review_timestamp_metadata_for_encounter(
                 REVIEW_TIMESTAMP_SOURCE_MEDICATION_ORDER,
                 _latest_medication_order_timestamp(row, medication_events),
             ),
-            (REVIEW_TIMESTAMP_SOURCE_LAB, _latest_lab_timestamp(row, labevents)),
+            (
+                REVIEW_TIMESTAMP_SOURCE_LAB,
+                _latest_lab_timestamp(
+                    row,
+                    labevents,
+                    latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+                ),
+            ),
             (
                 REVIEW_TIMESTAMP_SOURCE_VITALS,
-                _latest_vitals_timestamp(row, triage=triage, vitalsign=vitalsign),
+                _latest_vitals_timestamp(
+                    row,
+                    triage=triage,
+                    vitalsign=vitalsign,
+                    latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
+                ),
             ),
             (
                 REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_END,
@@ -225,7 +250,16 @@ def select_review_timestamp_metadata_for_encounter(
                 return candidate, source_name
 
     return (
-        select_review_timestamp_for_encounter(row, strategy=strategy),
+        select_review_timestamp_for_encounter(
+            row,
+            strategy=strategy,
+            medication_events=medication_events,
+            labevents=labevents,
+            triage=triage,
+            vitalsign=vitalsign,
+            latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+            latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
+        ),
         REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_BOUNDARY,
     )
 
@@ -321,9 +355,13 @@ def filter_active_medication_events(
     """Filter a medication event table down to rows active at the given snapshot."""
     if medication_events.empty:
         return medication_events.copy()
-    active_mask = medication_events.apply(
-        lambda row: is_medication_event_active_at_snapshot(row, snapshot_time),
-        axis=1,
+    snapshot = pd.to_datetime(snapshot_time, errors="coerce")
+    if pd.isna(snapshot):
+        return medication_events.iloc[0:0].copy()
+
+    active_mask = _active_medication_event_mask(
+        medication_events=medication_events,
+        snapshot_time=snapshot,
     )
     return medication_events.loc[active_mask].copy()
 
@@ -505,28 +543,31 @@ def classify_medication_status_at_review_time(
         return MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW
 
     active_events = filter_active_medication_events(medication_group, review_timestamp)
-    active_non_home = active_events.loc[active_events["source_home_medrecon"] != 1]
+    active_non_home = active_events.loc[
+        pd.to_numeric(active_events["source_home_medrecon"], errors="coerce").fillna(0).astype(int)
+        != 1
+    ]
     if not active_non_home.empty:
         return MEDICATION_STATUS_ACTIVE_AT_REVIEW
 
-    has_non_home = bool((medication_group["source_home_medrecon"] != 1).any())
+    home_flags = pd.to_numeric(
+        medication_group["source_home_medrecon"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+    non_home_mask = home_flags != 1
+    has_non_home = bool(non_home_mask.any())
     if not has_non_home:
         return MEDICATION_STATUS_PRE_ADMISSION_ONLY
 
-    latest_non_home_stop = latest_valid_timestamp(
-        [
-            pd.to_datetime(row.get("stoptime"), errors="coerce")
-            for row in medication_group.to_dict(orient="records")
-            if int(row.get("source_home_medrecon", 0)) != 1
-        ]
-    )
+    non_home_group = medication_group.loc[non_home_mask].copy()
+    latest_non_home_stop = pd.to_datetime(
+        non_home_group.get("stoptime", pd.Series(dtype=object)),
+        errors="coerce",
+        format=TIMESTAMP_FORMAT,
+    ).max()
+    latest_non_home_start = _coalesce_event_start_series(non_home_group).max()
     latest_non_home_time = latest_valid_timestamp(
-        [
-            pd.to_datetime(coalesce_event_start(row), errors="coerce")
-            for row in medication_group.to_dict(orient="records")
-            if int(row.get("source_home_medrecon", 0)) != 1
-        ]
-        + [latest_non_home_stop]
+        [latest_non_home_start, latest_non_home_stop]
     )
     review = pd.to_datetime(review_timestamp, errors="coerce")
     if pd.notna(review) and pd.notna(latest_non_home_time) and latest_non_home_time < review:
@@ -537,8 +578,8 @@ def classify_medication_status_at_review_time(
 def deduplicate_active_medication_group(group: pd.DataFrame) -> pd.Series:
     """Choose a single representative row for one active normalized medication."""
     ranked = group.copy()
-    ranked["priority_rank"] = ranked.apply(_snapshot_priority_rank, axis=1)
-    ranked["sort_time"] = ranked.apply(coalesce_event_start, axis=1)
+    ranked["priority_rank"] = _snapshot_priority_rank_series(ranked)
+    ranked["sort_time"] = _coalesce_event_start_series(ranked)
     ranked = ranked.sort_values(
         ["priority_rank", "sort_time", "pharmacy_enriched_flag", "medication_event_id"],
         ascending=[False, False, False, True],
@@ -628,9 +669,21 @@ def _latest_medication_order_timestamp(
 def _latest_lab_timestamp(
     encounter_row: pd.Series | dict,
     labevents: pd.DataFrame | None,
+    *,
+    latest_lab_timestamp_by_hadm_id: dict[int, pd.Timestamp] | None = None,
 ) -> pd.Timestamp | pd.NaT:
     row = encounter_row if isinstance(encounter_row, dict) else encounter_row.to_dict()
     hadm_id = row.get("hadm_id")
+    if labevents is None or labevents.empty or hadm_id is None or pd.isna(hadm_id):
+        if latest_lab_timestamp_by_hadm_id is None:
+            return pd.NaT
+    normalized_hadm_id = _normalized_identifier(hadm_id)
+    if (
+        latest_lab_timestamp_by_hadm_id is not None
+        and isinstance(normalized_hadm_id, int)
+        and normalized_hadm_id in latest_lab_timestamp_by_hadm_id
+    ):
+        return latest_lab_timestamp_by_hadm_id[normalized_hadm_id]
     if labevents is None or labevents.empty or hadm_id is None or pd.isna(hadm_id):
         return pd.NaT
     labs = labevents.loc[labevents["hadm_id"] == hadm_id, ["charttime"]].copy()
@@ -642,17 +695,26 @@ def _latest_vitals_timestamp(
     *,
     triage: pd.DataFrame | None,
     vitalsign: pd.DataFrame | None,
+    latest_vitals_timestamp_by_subject_stay: dict[tuple[int, int], pd.Timestamp] | None = None,
 ) -> pd.Timestamp | pd.NaT:
     row = encounter_row if isinstance(encounter_row, dict) else encounter_row.to_dict()
     subject_id = row.get("subject_id")
     stay_id = row.get("stay_id")
+    lookup_key = _subject_stay_lookup_key(subject_id, stay_id)
+    if (
+        latest_vitals_timestamp_by_subject_stay is not None
+        and lookup_key is not None
+        and lookup_key in latest_vitals_timestamp_by_subject_stay
+    ):
+        return latest_vitals_timestamp_by_subject_stay[lookup_key]
     candidates: list[pd.Timestamp | pd.NaT] = []
     if triage is not None and not triage.empty and subject_id is not None and stay_id is not None:
         triage_rows = triage.loc[
             (triage["subject_id"] == subject_id) & (triage["stay_id"] == stay_id)
         ].copy()
-        if "intime" in triage_rows.columns:
-            candidates.extend(_coerce_timestamp_series(triage_rows["intime"]).tolist())
+        triage_time_column = "intime" if "intime" in triage_rows.columns else "charttime"
+        if triage_time_column in triage_rows.columns:
+            candidates.extend(_coerce_timestamp_series(triage_rows[triage_time_column]).tolist())
     if vitalsign is not None and not vitalsign.empty and subject_id is not None and stay_id is not None:
         vitals_rows = vitalsign.loc[
             (vitalsign["subject_id"] == subject_id) & (vitalsign["stay_id"] == stay_id)
@@ -679,3 +741,104 @@ def _latest_encounter_boundary_timestamp(encounter_row: pd.Series | dict) -> pd.
 def _coerce_timestamp_series(series: pd.Series) -> pd.Series:
     """Parse the canonical MIMIC timestamp string format without per-element inference."""
     return pd.to_datetime(series, errors="coerce", format=TIMESTAMP_FORMAT)
+
+
+def _subject_stay_lookup_key(
+    subject_id: object,
+    stay_id: object,
+) -> tuple[int, int] | None:
+    normalized_subject_id = _normalized_identifier(subject_id)
+    normalized_stay_id = _normalized_identifier(stay_id)
+    if not isinstance(normalized_subject_id, int) or not isinstance(normalized_stay_id, int):
+        return None
+    return normalized_subject_id, normalized_stay_id
+
+
+def _normalized_identifier(value: object) -> int | str | None:
+    if value is None or value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.notna(numeric):
+        return int(numeric)
+    text = str(value).strip()
+    return text or None
+
+
+def _active_medication_event_mask(
+    *,
+    medication_events: pd.DataFrame,
+    snapshot_time: pd.Timestamp,
+) -> pd.Series:
+    event_types = medication_events["medication_event_type"].astype("string")
+    start_times = _coalesce_event_start_series(medication_events)
+    stop_times = pd.to_datetime(
+        medication_events.get("stoptime", pd.Series(pd.NA, index=medication_events.index)),
+        errors="coerce",
+        format=TIMESTAMP_FORMAT,
+    )
+    interval_active = (
+        start_times.notna()
+        & (start_times <= snapshot_time)
+        & (stop_times.isna() | (stop_times >= snapshot_time))
+    )
+    point_event_mask = event_types.isin(["ed_pyxis", "hospital_admin"])
+    point_active = start_times.notna() & (start_times == snapshot_time)
+    home_event_mask = event_types == "home_medrecon"
+    continued_home = pd.to_numeric(
+        medication_events.get(
+            "continued_from_home_inferred",
+            pd.Series(0, index=medication_events.index),
+        ),
+        errors="coerce",
+    ).fillna(0).astype(int) == 1
+    return (
+        (point_event_mask & point_active)
+        | (home_event_mask & continued_home & interval_active)
+        | (~point_event_mask & ~home_event_mask & interval_active)
+    )
+
+
+def _snapshot_priority_rank_series(group: pd.DataFrame) -> pd.Series:
+    ranks = pd.Series(0, index=group.index, dtype="int64")
+    source_ed_pyxis = pd.to_numeric(
+        group.get("source_ed_pyxis", pd.Series(0, index=group.index)),
+        errors="coerce",
+    ).fillna(0).astype(int)
+    source_hospital_admin = pd.to_numeric(
+        group.get("source_hospital_admin", pd.Series(0, index=group.index)),
+        errors="coerce",
+    ).fillna(0).astype(int)
+    source_home_medrecon = pd.to_numeric(
+        group.get("source_home_medrecon", pd.Series(0, index=group.index)),
+        errors="coerce",
+    ).fillna(0).astype(int)
+    source_hospital_order = pd.to_numeric(
+        group.get("source_hospital_order", pd.Series(0, index=group.index)),
+        errors="coerce",
+    ).fillna(0).astype(int)
+    ranks = ranks.mask(source_ed_pyxis == 1, 1)
+    ranks = ranks.mask(source_hospital_admin == 1, 2)
+    ranks = ranks.mask(source_home_medrecon == 1, 3)
+    ranks = ranks.mask(source_hospital_order == 1, 4)
+    return ranks
+
+
+def _coalesce_event_start_series(group: pd.DataFrame) -> pd.Series:
+    start_columns: list[pd.Series] = []
+    for column in ["starttime", "event_time", "encounter_start"]:
+        if column in group:
+            start_columns.append(
+                pd.to_datetime(
+                    group[column],
+                    errors="coerce",
+                    format=TIMESTAMP_FORMAT,
+                )
+            )
+        else:
+            start_columns.append(pd.Series(pd.NaT, index=group.index))
+    return pd.concat(start_columns, axis=1).bfill(axis=1).iloc[:, 0]

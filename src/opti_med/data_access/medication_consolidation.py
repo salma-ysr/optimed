@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 import json
 import re
 
@@ -72,71 +73,94 @@ def collapse_continuation_intervals(
     working = dataframe.copy()
     working[start_column] = pd.to_datetime(working[start_column], errors="coerce")
     working[stop_column] = pd.to_datetime(working[stop_column], errors="coerce")
+    working = working.sort_values(
+        [*group_columns, start_column, stop_column],
+        na_position="last",
+        kind="stable",
+    ).reset_index(drop=True)
 
     collapsed_rows: list[dict] = []
     episode_index = 0
-    for _, group in working.groupby(group_columns, dropna=False, sort=False):
-        sorted_group = group.sort_values([start_column, stop_column], na_position="last").reset_index(drop=True)
+    current_group_key: tuple[object, ...] | None = None
+    current_segment_payloads: list[dict[str, object]] = []
+    current_segment_count = 0
+    current_representative: dict[str, object] | None = None
+    current_representative_completeness = -1
+    current_start = pd.NaT
+    current_stop = pd.NaT
 
-        current_rows: list[dict] = []
+    def flush_current() -> None:
+        nonlocal episode_index
+        nonlocal current_group_key
+        nonlocal current_segment_payloads
+        nonlocal current_segment_count
+        nonlocal current_representative
+        nonlocal current_representative_completeness
+        nonlocal current_start
+        nonlocal current_stop
+        if current_representative is None:
+            return
+
+        representative = dict(current_representative)
+        representative[start_column] = _format_timestamp(current_start)
+        representative[stop_column] = _format_timestamp(current_stop)
+        representative["medication_episode_id"] = f"{episode_id_prefix}-{episode_index}"
+        representative["prescription_segment_count"] = current_segment_count
+        representative["prescription_segments_json"] = json.dumps(
+            current_segment_payloads,
+            sort_keys=True,
+        )
+        collapsed_rows.append(representative)
+        episode_index += 1
+        current_group_key = None
+        current_segment_payloads = []
+        current_segment_count = 0
+        current_representative = None
+        current_representative_completeness = -1
         current_start = pd.NaT
         current_stop = pd.NaT
 
-        def flush_current() -> None:
-            nonlocal episode_index, current_rows, current_start, current_stop
-            if not current_rows:
-                return
+    columns = list(working.columns)
+    for row_values in working.itertuples(index=False, name=None):
+        row = dict(zip(columns, row_values))
+        group_key = tuple(_group_key_value(row.get(column_name)) for column_name in group_columns)
+        row_start = pd.to_datetime(row.get(start_column), errors="coerce")
+        row_stop = pd.to_datetime(row.get(stop_column), errors="coerce")
+        if pd.isna(row_start):
+            row_start = row_stop
+        if pd.isna(row_stop):
+            row_stop = row_start
 
-            representative = _select_representative_row(pd.DataFrame(current_rows))
-            representative[start_column] = _format_timestamp(current_start)
-            representative[stop_column] = _format_timestamp(current_stop)
-            representative["medication_episode_id"] = f"{episode_id_prefix}-{episode_index}"
-            representative["prescription_segment_count"] = len(current_rows)
-            representative["prescription_segments_json"] = json.dumps(
-                [
-                    {
-                        field: _json_ready_value(row.get(field))
-                        for field in segment_fields
-                    }
-                    for row in current_rows
-                ],
-                sort_keys=True,
-            )
-            collapsed_rows.append(representative)
-            episode_index += 1
-            current_rows = []
-            current_start = pd.NaT
-            current_stop = pd.NaT
+        if current_group_key is None:
+            current_group_key = group_key
+        elif group_key != current_group_key:
+            flush_current()
+            current_group_key = group_key
 
-        for row in sorted_group.to_dict(orient="records"):
-            row_start = pd.to_datetime(row.get(start_column), errors="coerce")
-            row_stop = pd.to_datetime(row.get(stop_column), errors="coerce")
-            if pd.isna(row_start):
-                row_start = row_stop
-            if pd.isna(row_stop):
-                row_stop = row_start
+        if current_representative is not None and not _intervals_represent_continuation(
+            current_stop=current_stop,
+            next_start=row_start,
+            gap_tolerance=gap_tolerance,
+        ):
+            flush_current()
+            current_group_key = group_key
 
-            if not current_rows:
-                current_rows = [row]
-                current_start = row_start
-                current_stop = row_stop
-                continue
+        row_completeness = _count_non_null_values(row)
+        if current_representative is None or row_completeness > current_representative_completeness:
+            current_representative = row
+            current_representative_completeness = row_completeness
 
-            if _intervals_represent_continuation(
-                current_stop=current_stop,
-                next_start=row_start,
-                gap_tolerance=gap_tolerance,
-            ):
-                current_rows.append(row)
-                current_start = _min_timestamp(current_start, row_start)
-                current_stop = _max_timestamp(current_stop, row_stop)
-            else:
-                flush_current()
-                current_rows = [row]
-                current_start = row_start
-                current_stop = row_stop
+        current_segment_payloads.append(
+            {
+                field: _json_ready_value(row.get(field))
+                for field in segment_fields
+            }
+        )
+        current_segment_count += 1
+        current_start = _min_timestamp(current_start, row_start)
+        current_stop = _max_timestamp(current_stop, row_stop)
 
-        flush_current()
+    flush_current()
 
     return pd.DataFrame(collapsed_rows)
 
@@ -154,11 +178,8 @@ def _intervals_represent_continuation(
     return next_start <= current_stop + gap_tolerance
 
 
-def _select_representative_row(group: pd.DataFrame) -> dict:
-    ranked = group.copy()
-    ranked["data_completeness"] = ranked.notna().sum(axis=1)
-    ranked = ranked.sort_values("data_completeness", ascending=False).reset_index(drop=True)
-    return ranked.iloc[0].drop(labels=["data_completeness"]).to_dict()
+def _count_non_null_values(row: dict[str, object]) -> int:
+    return sum(1 for value in row.values() if _value_is_present(value))
 
 
 def _format_timestamp(value: pd.Timestamp | pd.NaT) -> str | None:
@@ -168,10 +189,26 @@ def _format_timestamp(value: pd.Timestamp | pd.NaT) -> str | None:
 
 
 def _json_ready_value(value: object) -> object:
-    timestamp = pd.to_datetime(value, errors="coerce")
-    if pd.notna(timestamp):
-        return timestamp.strftime(TIMESTAMP_FORMAT)
-    if value is None or pd.isna(value):
+    if not _value_is_present(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.strftime(TIMESTAMP_FORMAT)
+    if isinstance(value, datetime):
+        return pd.Timestamp(value).strftime(TIMESTAMP_FORMAT)
+    if isinstance(value, date):
+        return pd.Timestamp(value).strftime(TIMESTAMP_FORMAT)
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            return value.item()
+        except ValueError:
+            pass
+        except TypeError:
+            pass
+    return value
+
+
+def _group_key_value(value: object) -> object:
+    if not _value_is_present(value):
         return None
     return value
 
@@ -185,6 +222,19 @@ def _min_timestamp(left: pd.Timestamp | pd.NaT, right: pd.Timestamp | pd.NaT) ->
 
 
 def _max_timestamp(left: pd.Timestamp | pd.NaT, right: pd.Timestamp | pd.NaT) -> pd.Timestamp | pd.NaT:
-    if pd.isna(left) or pd.isna(right):
-        return pd.NaT
+    if pd.isna(left):
+        return right
+    if pd.isna(right):
+        return left
     return max(left, right)
+
+
+def _value_is_present(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        return not pd.isna(value)
+    except TypeError:
+        return True
+    except ValueError:
+        return True

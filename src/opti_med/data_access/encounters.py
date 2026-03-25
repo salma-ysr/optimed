@@ -99,6 +99,7 @@ class EncounterIndexBuilder:
                 {True: "ed_to_inpatient", False: "ed_only"}
             ),
         )
+        ed_linked = _collapse_linked_ed_segments(ed_linked)
 
         matched_admission_keys = (
             ed_linked.loc[ed_linked["linked_hospital_admission_flag"] == 1, ["subject_id", "hadm_id"]]
@@ -344,6 +345,55 @@ def _build_ed_index(
     ]
 
 
+def _collapse_linked_ed_segments(ed_linked: pd.DataFrame) -> pd.DataFrame:
+    """Collapse multiple ED stays linked to one admission into one canonical encounter row."""
+    if ed_linked.empty:
+        return ed_linked
+    if not ed_linked.duplicated(subset=["subject_id", "hadm_id"], keep=False).any():
+        return ed_linked.reset_index(drop=True)
+
+    collapsed_rows: list[dict[str, object]] = []
+    for _, group in ed_linked.groupby(["subject_id", "hadm_id"], dropna=False, sort=False):
+        if len(group) == 1:
+            collapsed_rows.append(group.iloc[0].to_dict())
+            continue
+        collapsed_rows.append(_collapse_linked_ed_group(group))
+
+    return pd.DataFrame.from_records(collapsed_rows).reindex(columns=ed_linked.columns)
+
+
+def _collapse_linked_ed_group(group: pd.DataFrame) -> dict[str, object]:
+    """Aggregate sequential ED segments attached to the same hospital admission."""
+    by_start = group.sort_values(["intime", "outtime", "stay_id"], na_position="last")
+    by_end = group.sort_values(["outtime", "intime", "stay_id"], na_position="last")
+    earliest = by_start.iloc[0]
+    latest = by_end.iloc[-1]
+
+    payloads = [
+        loads_json_or_none(value)
+        for value in group["ed_source_provenance_json"]
+        if value is not None and not pd.isna(value)
+    ]
+
+    row = latest.to_dict()
+    row["intime"] = _timestamp_min(group["intime"])
+    row["outtime"] = _timestamp_max(group["outtime"])
+    row["ed_length_of_stay_hours"] = _duration_hours_between(row["intime"], row["outtime"])
+    row["arrival_transport"] = _first_non_null_value(by_start["arrival_transport"])
+    row["ed_disposition"] = _last_non_null_value(by_end["ed_disposition"])
+    row["ed_source_provenance_json"] = dumps_json(
+        {
+            "linked_ed_stay_count": len(group),
+            "linked_ed_segments": payloads,
+        }
+    )
+    row["stay_id"] = latest.get("stay_id")
+    row["encounter_source"] = "ed_to_inpatient" if pd.notna(row.get("admittime")) else "ed_only"
+    row["linked_ed_stay_flag"] = 1
+    row["linked_hospital_admission_flag"] = int(pd.notna(row.get("admittime")))
+    return row
+
+
 def _age_group_from_anchor_age(anchor_age: int | float) -> str:
     """Reuse the current age banding until the patient-first pipeline changes it."""
     if pd.isna(anchor_age):
@@ -403,3 +453,39 @@ def _source_provenance_json(
 
 def _format_timestamp_series(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _timestamp_min(series: pd.Series) -> pd.Timestamp | pd.NaT:
+    timestamps = pd.to_datetime(series, errors="coerce").dropna()
+    if timestamps.empty:
+        return pd.NaT
+    return timestamps.min()
+
+
+def _timestamp_max(series: pd.Series) -> pd.Timestamp | pd.NaT:
+    timestamps = pd.to_datetime(series, errors="coerce").dropna()
+    if timestamps.empty:
+        return pd.NaT
+    return timestamps.max()
+
+
+def _duration_hours_between(start: object, end: object) -> float | pd.NA:
+    start_ts = pd.to_datetime(start, errors="coerce")
+    end_ts = pd.to_datetime(end, errors="coerce")
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return pd.NA
+    return round((end_ts - start_ts).total_seconds() / 3600.0, 3)
+
+
+def _first_non_null_value(series: pd.Series) -> object:
+    for value in series:
+        if value is not None and not pd.isna(value):
+            return value
+    return pd.NA
+
+
+def _last_non_null_value(series: pd.Series) -> object:
+    for value in reversed(series.tolist()):
+        if value is not None and not pd.isna(value):
+            return value
+    return pd.NA

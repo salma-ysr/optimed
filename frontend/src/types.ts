@@ -1,4 +1,82 @@
 export type RiskLabel = "low" | "medium" | "high";
+export type ClinicianReviewStatus = "reviewed" | "uncertain" | "insufficient_context" | "skip";
+export type ClinicianSuggestedAction =
+  | "keep"
+  | "monitor"
+  | "reconsider"
+  | "deprescribe_candidate"
+  | "needs_more_info";
+
+export interface ClinicianReviewRecord {
+  subject_id: number;
+  encounter_id: string;
+  hadm_id?: number | null;
+  stay_id?: number | null;
+  medication_standardized: string;
+  medication_normalized?: string | null;
+  review_timestamp: string;
+  modeling__row_id?: string | null;
+  review_submission_id: string;
+  review_version: number;
+  review_artifact_version: string;
+  review_submission_timestamp: string;
+  reviewer_id: string;
+  label__clinician_priority_level: RiskLabel;
+  label__clinician_priority_score?: number | null;
+  label__clinician_priority_score_level?: RiskLabel | null;
+  label__clinician_review_status: ClinicianReviewStatus;
+  label__clinician_reason_tags: string[];
+  label__clinician_note?: string | null;
+  label__clinician_reviewed_flag: number;
+  label__clinician_suggested_action?: ClinicianSuggestedAction | null;
+  review_provenance_json?: Record<string, unknown> | null;
+}
+
+export interface ReviewQueueSummary {
+  reviewable_rows: number;
+  reviewed_rows: number;
+  unreviewed_rows: number;
+  priority_rows: number;
+  disagreement_candidate_rows: number;
+}
+
+export interface ClinicianReviewWorkflowReport {
+  contract_version: string;
+  generated_at: string;
+  phase_scope_statement: string;
+  artifact_paths: Record<string, string>;
+  reviewable_row_count: number;
+  clinician_reviewed_row_count: number;
+  required_level_populated_count: number;
+  numeric_score_populated_count: number;
+  reason_tag_row_coverage_count: number;
+  priority_level_frequencies: Record<string, number>;
+  reason_tag_frequencies: Record<string, number>;
+  review_status_frequencies: Record<string, number>;
+  traceability_validation: Record<string, number>;
+}
+
+export interface ClinicianReviewSubmissionRequest {
+  subject_id: number;
+  encounter_id: string;
+  hadm_id?: number | null;
+  stay_id?: number | null;
+  medication_standardized: string;
+  review_timestamp: string;
+  modeling__row_id?: string | null;
+  reviewer_id?: string | null;
+  label__clinician_priority_level: RiskLabel;
+  label__clinician_priority_score?: number | null;
+  label__clinician_review_status: ClinicianReviewStatus;
+  label__clinician_reason_tags: string[];
+  label__clinician_note?: string | null;
+  label__clinician_suggested_action?: ClinicianSuggestedAction | null;
+}
+
+export interface ClinicianReviewSubmissionResponse {
+  review: ClinicianReviewRecord;
+  workflow_report: ClinicianReviewWorkflowReport;
+}
 
 export interface ScoredRow {
   subject_id: number;
@@ -256,6 +334,17 @@ export interface PatientMedicationCard extends MedicationRowSummary {
   review_timestamp?: string | null;
   review_timestamp_source?: string | null;
   priority_score_source?: string | null;
+  medication_standardized?: string | null;
+  modeling__row_id?: string | null;
+  first_scope_supported_class_flag?: number | null;
+  benchmark__current_rule_score?: number | null;
+  benchmark__current_rule_score_level?: RiskLabel | null;
+  benchmark__current_rule_available_flag?: number | null;
+  benchmark__medication_class_only_medication_class_standardized?: string | null;
+  reviewable_flag?: boolean;
+  review_queue_priority?: string | null;
+  review_queue_reasons?: string[] | null;
+  clinician_review?: ClinicianReviewRecord | null;
   // Reserved for future ML output. These remain undefined in the current rule-based dossier.
   ml_priority_score?: number | null;
   ml_priority_rank_within_encounter?: number | null;
@@ -280,6 +369,7 @@ export interface PatientDetailResponse {
   top_problem_flashes: ProblemFlash[];
   flagged_medication_count: number;
   medication_card_count: number;
+  review_queue_summary?: ReviewQueueSummary | null;
   // Explicit placeholder-only sections in the current dossier contract.
   time_to_benefit_summary?: string | null;
   time_to_benefit_note?: string | null;

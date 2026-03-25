@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from opti_med.cohort import OlderAdultEncounterEligibilityBuilder
 from opti_med.config import Settings
 from opti_med.data_access.encounter_medication_state import (
     DEFAULT_ENCOUNTER_MEDICATION_STATE_OUTPUT_PATH,
@@ -46,12 +47,15 @@ class StandardizedAnalyticalArtifactTests(unittest.TestCase):
             settings = _build_standardized_only_settings(roots)
             encounter_builder = EncounterIndexBuilder(settings)
             medication_builder = CanonicalMedicationEventBuilder(settings)
+            eligibility_builder = OlderAdultEncounterEligibilityBuilder(settings)
             state_builder = EncounterMedicationStateArtifactBuilder(settings)
 
             encounter_index = encounter_builder.build()
             encounter_result = encounter_builder.save(encounter_index)
             medication_events = medication_builder.build(encounter_index=encounter_index)
             medication_result = medication_builder.save(medication_events)
+            eligibility = eligibility_builder.build(encounter_index=encounter_index)
+            eligibility_builder.save(eligibility)
             encounter_medication_state = state_builder.build(
                 encounter_index=encounter_index,
                 medication_events=medication_events,
@@ -193,6 +197,115 @@ class StandardizedAnalyticalArtifactTests(unittest.TestCase):
             self.assertIn("duplicate primary-key rows", state_report_text)
             self.assertIn("medication_status_at_review=inactive_before_review_time", state_report_text)
 
+    def test_repeated_linked_ed_stays_collapse_to_one_canonical_encounter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            roots = _build_raw_tree_with_medication_sources(
+                Path(temp_dir),
+                include_repeated_linked_ed_stay=True,
+            )
+            FullDataIngestionPipeline(_build_ingestion_settings(roots)).run()
+
+            settings = _build_standardized_only_settings(roots)
+            encounter_builder = EncounterIndexBuilder(settings)
+            medication_builder = CanonicalMedicationEventBuilder(settings)
+
+            encounter_index = encounter_builder.build()
+            medication_events = medication_builder.build(encounter_index=encounter_index)
+
+            self.assertEqual(encounter_index["encounter_id"].tolist(), ["hadm:10"])
+            self.assertEqual(encounter_index["encounter_source"].tolist(), ["ed_to_inpatient"])
+            self.assertEqual(encounter_index["intime"].tolist(), ["2125-03-19 12:36:00"])
+            self.assertEqual(encounter_index["outtime"].tolist(), ["2125-03-19 18:30:00"])
+            self.assertEqual(encounter_index["ed_disposition"].tolist(), ["ADMITTED"])
+
+            linked_ed_events = medication_events.loc[
+                medication_events["event_source_table"].isin(["medrecon", "pyxis"])
+            ].copy()
+            self.assertEqual(set(linked_ed_events["encounter_id"].tolist()), {"hadm:10"})
+            self.assertEqual(
+                set(linked_ed_events["stay_id"].dropna().astype(int).tolist()),
+                {100, 101},
+            )
+            self.assertEqual(
+                set(linked_ed_events["hadm_id"].dropna().astype(int).tolist()),
+                {10},
+            )
+
+    def test_streaming_medication_events_matches_in_memory_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            roots = _build_raw_tree_with_medication_sources(
+                Path(temp_dir),
+                include_repeated_linked_ed_stay=True,
+            )
+            FullDataIngestionPipeline(_build_ingestion_settings(roots)).run()
+
+            settings = _build_standardized_only_settings(roots)
+            encounter_index = EncounterIndexBuilder(settings).build()
+            medication_builder = CanonicalMedicationEventBuilder(settings)
+
+            expected = medication_builder.build(encounter_index=encounter_index)
+            streaming_result = medication_builder.build_and_save_streaming(
+                encounter_index=encounter_index,
+                output_path=roots["workspace"] / "streaming_medication_events.parquet",
+                subject_partition_count=2,
+                partition_batch_size=1,
+            )
+            actual = pd.read_parquet(streaming_result.output_path)
+
+            compare_columns = [
+                "medication_event_id",
+                "subject_id",
+                "hadm_id",
+                "stay_id",
+                "encounter_id",
+                "medication_event_type",
+                "event_source_category",
+                "medication_normalized",
+                "continued_from_home_inferred",
+                "newly_started_during_encounter_inferred",
+                "order_enrichment_applied_flag",
+            ]
+            expected_compare = (
+                expected.loc[:, compare_columns]
+                .sort_values("medication_event_id")
+                .reset_index(drop=True)
+                .astype(object)
+                .where(lambda frame: pd.notna(frame), None)
+            )
+            actual_compare = (
+                actual.loc[:, compare_columns]
+                .sort_values("medication_event_id")
+                .reset_index(drop=True)
+                .astype(object)
+                .where(lambda frame: pd.notna(frame), None)
+            )
+            pd.testing.assert_frame_equal(
+                actual_compare,
+                expected_compare,
+                check_dtype=False,
+            )
+            self.assertEqual(streaming_result.metrics.row_count, len(actual))
+
+    def test_unlinked_hospital_admin_rows_are_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            roots = _build_raw_tree_with_medication_sources(
+                Path(temp_dir),
+                include_unlinked_emar_row=True,
+            )
+            FullDataIngestionPipeline(_build_ingestion_settings(roots)).run()
+
+            settings = _build_standardized_only_settings(roots)
+            encounter_index = EncounterIndexBuilder(settings).build()
+            medication_events = CanonicalMedicationEventBuilder(settings).build(
+                encounter_index=encounter_index
+            )
+
+            self.assertEqual(int(medication_events["encounter_id"].isna().sum()), 0)
+            self.assertNotIn(
+                "ghost medication",
+                set(medication_events["medication_normalized"].dropna().tolist()),
+            )
+
 
 def _build_ingestion_settings(roots: dict[str, Path]) -> Settings:
     standardized_root = roots["workspace"] / "standardized"
@@ -200,6 +313,7 @@ def _build_ingestion_settings(roots: dict[str, Path]) -> Settings:
         raw_clinical_data_root=roots["clinical"],
         raw_ed_data_root=roots["ed"],
         standardized_root=standardized_root,
+        analytical_root=roots["workspace"] / "analytical",
         manifest_root=standardized_root / "manifests",
         file_extension=".csv",
         ingestion_behavior="overwrite",
@@ -213,12 +327,18 @@ def _build_standardized_only_settings(roots: dict[str, Path]) -> Settings:
         raw_clinical_data_root=roots["workspace"] / "missing-clinical",
         raw_ed_data_root=roots["workspace"] / "missing-ed",
         standardized_root=standardized_root,
+        analytical_root=roots["workspace"] / "analytical",
         manifest_root=standardized_root / "manifests",
         file_extension=".csv",
     )
 
 
-def _build_raw_tree_with_medication_sources(base_dir: Path) -> dict[str, Path]:
+def _build_raw_tree_with_medication_sources(
+    base_dir: Path,
+    *,
+    include_repeated_linked_ed_stay: bool = False,
+    include_unlinked_emar_row: bool = False,
+) -> dict[str, Path]:
     clinical_root = base_dir / "mimic-iv-3.1"
     ed_root = base_dir / "mimic-iv-ed"
     hosp_dir = clinical_root / "hosp"
@@ -300,22 +420,36 @@ def _build_raw_tree_with_medication_sources(base_dir: Path) -> dict[str, Path]:
             }
         ]
     ).to_csv(hosp_dir / "pharmacy.csv", index=False)
-    pd.DataFrame(
-        [
+    emar_rows = [
+        {
+            "subject_id": 1,
+            "hadm_id": 10,
+            "emar_id": 900,
+            "emar_seq": 1,
+            "poe_id": 700,
+            "pharmacy_id": 500,
+            "charttime": "2125-03-19 21:00:00",
+            "medication": "Furosemide",
+            "event_txt": "Administered",
+            "scheduletime": "2125-03-19 21:00:00",
+        }
+    ]
+    if include_unlinked_emar_row:
+        emar_rows.append(
             {
                 "subject_id": 1,
-                "hadm_id": 10,
-                "emar_id": 900,
-                "emar_seq": 1,
-                "poe_id": 700,
-                "pharmacy_id": 500,
-                "charttime": "2125-03-19 21:00:00",
-                "medication": "Furosemide",
+                "hadm_id": None,
+                "emar_id": None,
+                "emar_seq": 2,
+                "poe_id": None,
+                "pharmacy_id": None,
+                "charttime": "2125-03-19 22:00:00",
+                "medication": "Ghost Medication",
                 "event_txt": "Administered",
-                "scheduletime": "2125-03-19 21:00:00",
+                "scheduletime": "2125-03-19 22:00:00",
             }
-        ]
-    ).to_csv(hosp_dir / "emar.csv", index=False)
+        )
+    pd.DataFrame(emar_rows).to_csv(hosp_dir / "emar.csv", index=False)
     pd.DataFrame(
         [
             {
@@ -329,8 +463,39 @@ def _build_raw_tree_with_medication_sources(base_dir: Path) -> dict[str, Path]:
             }
         ]
     ).to_csv(hosp_dir / "emar_detail.csv", index=False)
-    pd.DataFrame(
-        [
+    edstays_rows = [
+        {
+            "subject_id": 1,
+            "hadm_id": 10,
+            "stay_id": 100,
+            "intime": "2125-03-19 12:36:00",
+            "outtime": "2125-03-19 16:59:47",
+            "gender": "M",
+            "race": "WHITE",
+            "arrival_transport": "WALK IN",
+            "disposition": "ADMITTED",
+        }
+    ]
+    medrecon_rows = [
+        {
+            "subject_id": 1,
+            "stay_id": 100,
+            "name": "Furosemide 20 mg",
+            "charttime": "2125-03-19 13:00:00",
+        }
+    ]
+    pyxis_rows = [
+        {
+            "subject_id": 1,
+            "stay_id": 100,
+            "charttime": "2125-03-19 14:00:00",
+            "name": "Ondansetron",
+            "med_rn": "Ondansetron",
+        }
+    ]
+
+    if include_repeated_linked_ed_stay:
+        edstays_rows = [
             {
                 "subject_id": 1,
                 "hadm_id": 10,
@@ -340,31 +505,41 @@ def _build_raw_tree_with_medication_sources(base_dir: Path) -> dict[str, Path]:
                 "gender": "M",
                 "race": "WHITE",
                 "arrival_transport": "WALK IN",
+                "disposition": "HOME",
+            },
+            {
+                "subject_id": 1,
+                "hadm_id": 10,
+                "stay_id": 101,
+                "intime": "2125-03-19 16:59:47",
+                "outtime": "2125-03-19 18:30:00",
+                "gender": "M",
+                "race": "WHITE",
+                "arrival_transport": "AMBULANCE",
                 "disposition": "ADMITTED",
-            }
+            },
         ]
-    ).to_csv(ed_dir / "edstays.csv", index=False)
-    pd.DataFrame(
-        [
+        medrecon_rows.append(
             {
                 "subject_id": 1,
-                "stay_id": 100,
-                "name": "Furosemide 20 mg",
-                "charttime": "2125-03-19 13:00:00",
+                "stay_id": 101,
+                "name": "Aspirin 81 mg",
+                "charttime": "2125-03-19 17:15:00",
             }
-        ]
-    ).to_csv(ed_dir / "medrecon.csv", index=False)
-    pd.DataFrame(
-        [
+        )
+        pyxis_rows.append(
             {
                 "subject_id": 1,
-                "stay_id": 100,
-                "charttime": "2125-03-19 14:00:00",
-                "name": "Ondansetron",
-                "med_rn": "Ondansetron",
+                "stay_id": 101,
+                "charttime": "2125-03-19 17:20:00",
+                "name": "Morphine",
+                "med_rn": "Morphine",
             }
-        ]
-    ).to_csv(ed_dir / "pyxis.csv", index=False)
+        )
+
+    pd.DataFrame(edstays_rows).to_csv(ed_dir / "edstays.csv", index=False)
+    pd.DataFrame(medrecon_rows).to_csv(ed_dir / "medrecon.csv", index=False)
+    pd.DataFrame(pyxis_rows).to_csv(ed_dir / "pyxis.csv", index=False)
 
     return {
         "workspace": base_dir,

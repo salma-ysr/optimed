@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getPatientDetail } from "../api/client";
+import { getPatientDetail, submitClinicianReview } from "../api/client";
 import type {
+  ClinicianReviewRecord,
+  ClinicianReviewStatus,
+  ClinicianSuggestedAction,
+  ClinicianReviewSubmissionRequest,
   PatientDetailResponse,
   PatientEncounterSummary,
   PatientMedicationCard,
   ProblemFlash,
   RiskLabel,
+  ReviewQueueSummary,
 } from "../types";
 import {
   translateBucketLabel,
@@ -33,6 +38,10 @@ type MedicationAlertCardProps = {
   medication: PatientMedicationCard;
   expanded: boolean;
   onToggle: () => void;
+  reviewerId: string;
+  onReviewerIdChange: (value: string) => void;
+  onReviewSaved: () => Promise<void>;
+  reviewContext: MedicationReviewContext;
 };
 
 type DecisionSupportPanelProps = {
@@ -42,6 +51,40 @@ type DecisionSupportPanelProps = {
   summary?: string | null;
   emptyLabel: string;
 };
+
+type MedicationReviewContext = {
+  burden: string;
+  diagnoses: string | null;
+  renal: string | null;
+};
+
+const REVIEWER_ID_STORAGE_KEY = "opti_med_phase5_reviewer_id";
+const REASON_TAG_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "polypharmacy", label: "Polypharmacie" },
+  { value: "duplication", label: "Duplication" },
+  { value: "renal_risk", label: "Risque rénal" },
+  { value: "fall_risk", label: "Risque de chute" },
+  { value: "anticholinergic_burden", label: "Charge anticholinergique" },
+  { value: "interaction_risk", label: "Risque d’interaction" },
+  { value: "questionable_indication", label: "Indication discutable" },
+  { value: "monitoring_needed", label: "Surveillance nécessaire" },
+  { value: "tapering_candidate", label: "Candidat au sevrage" },
+  { value: "insufficient_context", label: "Contexte insuffisant" },
+  { value: "other", label: "Autre" },
+];
+const REVIEW_STATUS_OPTIONS: Array<{ value: ClinicianReviewStatus; label: string }> = [
+  { value: "reviewed", label: "Revu" },
+  { value: "uncertain", label: "Incertain" },
+  { value: "insufficient_context", label: "Contexte insuffisant" },
+  { value: "skip", label: "Passer" },
+];
+const SUGGESTED_ACTION_OPTIONS: Array<{ value: ClinicianSuggestedAction; label: string }> = [
+  { value: "keep", label: "Garder" },
+  { value: "monitor", label: "Surveiller" },
+  { value: "reconsider", label: "Réévaluer" },
+  { value: "deprescribe_candidate", label: "Déprescription possible" },
+  { value: "needs_more_info", label: "Informations requises" },
+];
 
 function riskTone(label: RiskLabel) {
   if (label === "high") {
@@ -343,7 +386,397 @@ function reviewTimestampSummary(record: PatientDetailResponse) {
     : `Revue au ${reviewTimestamp}`;
 }
 
-function MedicationAlertCard({ medication, expanded, onToggle }: MedicationAlertCardProps) {
+function queuePriorityLabel(priority?: string | null) {
+  if (priority === "disagreement_candidate") {
+    return "Désaccord";
+  }
+  if (priority === "priority") {
+    return "À revoir vite";
+  }
+  if (priority === "reviewed") {
+    return "Déjà revu";
+  }
+  if (priority === "reviewable") {
+    return "Revue possible";
+  }
+  return "Hors périmètre";
+}
+
+function queuePriorityTone(priority?: string | null) {
+  if (priority === "disagreement_candidate") {
+    return "chip chip-high";
+  }
+  if (priority === "priority") {
+    return "chip chip-medium";
+  }
+  return "chip chip-neutral";
+}
+
+function queueReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    lacks_clinician_review: "Sans revue clinicienne",
+    already_reviewed: "Revue enregistrée",
+    supported_medication_class: "Classe de première portée",
+    constructed_label_ambiguous: "Label construit ambigu",
+    rule_signal_present: "Signal règle présent",
+    clinician_rule_disagreement: "Clinicien vs règle",
+    not_in_phase5_review_scope: "Non aligné au grain Phase 5",
+  };
+  return labels[reason] ?? reason;
+}
+
+function reviewStatusLabel(status: ClinicianReviewStatus) {
+  return REVIEW_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
+}
+
+function reasonTagLabel(tag: string) {
+  return REASON_TAG_OPTIONS.find((option) => option.value === tag)?.label ?? tag;
+}
+
+function suggestedActionLabel(action?: ClinicianSuggestedAction | null) {
+  if (!action) {
+    return null;
+  }
+  return SUGGESTED_ACTION_OPTIONS.find((option) => option.value === action)?.label ?? action;
+}
+
+function savedReviewSummary(review?: ClinicianReviewRecord | null) {
+  if (!review) {
+    return null;
+  }
+  const parts = [
+    `Niveau ${translateRiskLabel(review.label__clinician_priority_level)}`,
+    reviewStatusLabel(review.label__clinician_review_status),
+    `v${review.review_version}`,
+  ];
+  if (review.reviewer_id) {
+    parts.push(review.reviewer_id);
+  }
+  return parts.join(" • ");
+}
+
+function buildMedicationReviewContext(record: PatientDetailResponse): MedicationReviewContext {
+  const renal =
+    record.left_column_context.latest_egfr_ml_min_1_73m2 != null
+      ? `eGFR ${record.left_column_context.latest_egfr_ml_min_1_73m2}`
+      : record.left_column_context.latest_creatinine_max != null
+        ? `Créatinine max ${record.left_column_context.latest_creatinine_max}`
+        : null;
+  const burdenCount =
+    record.current_medication_count ??
+    record.left_column_context.current_medication_count ??
+    currentMedicationCards(record).length;
+  return {
+    burden: `${burdenCount} médicaments actifs au temps de revue`,
+    diagnoses: buildChronicRiskLabels(record),
+    renal,
+  };
+}
+
+function reviewerIdInitialValue() {
+  if (typeof window === "undefined") {
+    return "pharmacist_demo_local";
+  }
+  return window.localStorage.getItem(REVIEWER_ID_STORAGE_KEY) ?? "pharmacist_demo_local";
+}
+
+function PharmacistReviewPanel({
+  medication,
+  reviewerId,
+  onReviewerIdChange,
+  onReviewSaved,
+  reviewContext,
+}: Pick<MedicationAlertCardProps, "medication" | "reviewerId" | "onReviewerIdChange" | "onReviewSaved" | "reviewContext">) {
+  const existingReview = medication.clinician_review;
+  const [priorityLevel, setPriorityLevel] = useState<RiskLabel>(
+    existingReview?.label__clinician_priority_level ?? medication.deprescribing_priority_label,
+  );
+  const [reviewStatus, setReviewStatus] = useState<ClinicianReviewStatus>(
+    existingReview?.label__clinician_review_status ?? "reviewed",
+  );
+  const [priorityScore, setPriorityScore] = useState<string>(
+    existingReview?.label__clinician_priority_score != null
+      ? String(existingReview.label__clinician_priority_score)
+      : "",
+  );
+  const [note, setNote] = useState<string>(existingReview?.label__clinician_note ?? "");
+  const [suggestedAction, setSuggestedAction] = useState<ClinicianSuggestedAction | "">(
+    existingReview?.label__clinician_suggested_action ?? "",
+  );
+  const [reasonTags, setReasonTags] = useState<string[]>(
+    existingReview?.label__clinician_reason_tags ?? [],
+  );
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPriorityLevel(existingReview?.label__clinician_priority_level ?? medication.deprescribing_priority_label);
+    setReviewStatus(existingReview?.label__clinician_review_status ?? "reviewed");
+    setPriorityScore(
+      existingReview?.label__clinician_priority_score != null
+        ? String(existingReview.label__clinician_priority_score)
+        : "",
+    );
+    setNote(existingReview?.label__clinician_note ?? "");
+    setSuggestedAction(existingReview?.label__clinician_suggested_action ?? "");
+    setReasonTags(existingReview?.label__clinician_reason_tags ?? []);
+    setSaveError(null);
+  }, [existingReview, medication.deprescribing_priority_label]);
+
+  function toggleReasonTag(tag: string) {
+    setReasonTags((current) =>
+      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag],
+    );
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!medication.reviewable_flag || !medication.medication_standardized || !medication.review_timestamp) {
+      return;
+    }
+
+    const payload: ClinicianReviewSubmissionRequest = {
+      subject_id: medication.subject_id,
+      encounter_id: medication.encounter_id ?? "",
+      hadm_id: medication.hadm_id,
+      stay_id: medication.stay_id ?? null,
+      medication_standardized: medication.medication_standardized,
+      review_timestamp: medication.review_timestamp,
+      modeling__row_id: medication.modeling__row_id ?? null,
+      reviewer_id: reviewerId.trim() || "pharmacist_demo_local",
+      label__clinician_priority_level: priorityLevel,
+      label__clinician_priority_score: priorityScore.trim() ? Number(priorityScore) : null,
+      label__clinician_review_status: reviewStatus,
+      label__clinician_reason_tags: reasonTags,
+      label__clinician_note: note.trim() || null,
+      label__clinician_suggested_action: suggestedAction || null,
+    };
+
+    setIsSaving(true);
+    setSaveError(null);
+    setSaveMessage(null);
+    try {
+      const response = await submitClinicianReview(payload);
+      setSaveMessage(
+        `Revue enregistrée • ${response.review.reviewer_id} • ${response.review.review_submission_timestamp}`,
+      );
+      await onReviewSaved();
+    } catch (caughtError) {
+      const detail = caughtError instanceof Error ? caughtError.message : "Erreur inattendue";
+      setSaveError(`Enregistrement impossible. ${detail}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  if (!medication.reviewable_flag || !medication.medication_standardized || !medication.review_timestamp) {
+    return (
+      <section className="review-panel review-panel-muted">
+        <div className="review-panel-header">
+          <strong>Revue clinicienne Phase 5</strong>
+          <span className="chip chip-neutral">Non revuable</span>
+        </div>
+        <p className="details-section-copy">
+          Cette ligne ne se rattache pas de façon suffisamment propre au grain analytique Phase 5
+          pour créer un label clinicien traçable en aval.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="review-panel">
+      <div className="review-panel-header">
+        <div>
+          <strong>Revue clinicienne Phase 5</strong>
+          <p className="review-panel-subtitle">
+            Grain: {medication.subject_id} • {medication.encounter_id} • {medication.medication_standardized}
+          </p>
+        </div>
+        <span className={queuePriorityTone(medication.review_queue_priority)}>
+          {queuePriorityLabel(medication.review_queue_priority)}
+        </span>
+      </div>
+
+      <div className="review-context-grid">
+        <span className="review-context-chip">Statut: {medication.medication_status ?? "Indisponible"}</span>
+        <span className="review-context-chip">Charge: {reviewContext.burden}</span>
+        {reviewContext.diagnoses ? (
+          <span className="review-context-chip">Contexte: {reviewContext.diagnoses}</span>
+        ) : null}
+        {reviewContext.renal ? (
+          <span className="review-context-chip">Rénal: {reviewContext.renal}</span>
+        ) : null}
+        <span className="review-context-chip">
+          Règle dossier: {medication.deprescribing_priority_score} / {translateRiskLabel(medication.deprescribing_priority_label)}
+        </span>
+        {medication.benchmark__current_rule_available_flag ? (
+          <span className="review-context-chip">
+            Benchmark courant: {medication.benchmark__current_rule_score ?? "N/D"} /{" "}
+            {medication.benchmark__current_rule_score_level
+              ? translateRiskLabel(medication.benchmark__current_rule_score_level)
+              : "N/D"}
+          </span>
+        ) : null}
+      </div>
+
+      {medication.review_queue_reasons && medication.review_queue_reasons.length > 0 ? (
+        <div className="chip-row review-reasons-row">
+          {medication.review_queue_reasons.map((reason) => (
+            <span key={reason} className="chip chip-neutral">
+              {queueReasonLabel(reason)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {existingReview ? (
+        <div className="review-existing-summary">
+          <span className="chip chip-neutral">{savedReviewSummary(existingReview)}</span>
+          <p className="review-feedback review-feedback-success">
+            Dernière sauvegarde: {existingReview.review_submission_timestamp}
+          </p>
+          {suggestedActionLabel(existingReview.label__clinician_suggested_action) ? (
+            <p className="details-section-copy">
+              Disposition: {suggestedActionLabel(existingReview.label__clinician_suggested_action)}
+            </p>
+          ) : null}
+          {existingReview.label__clinician_reason_tags.length > 0 ? (
+            <p className="details-section-copy">
+              {existingReview.label__clinician_reason_tags.map(reasonTagLabel).join(" • ")}
+            </p>
+          ) : null}
+          {existingReview.label__clinician_note ? (
+            <p className="details-section-copy">{existingReview.label__clinician_note}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <form className="review-form" onSubmit={handleSubmit}>
+        <label className="review-field">
+          <span>Identifiant relecteur</span>
+          <input
+            value={reviewerId}
+            onChange={(event) => onReviewerIdChange(event.target.value)}
+            placeholder="pharmacist_demo_local"
+          />
+        </label>
+
+        <div className="review-field">
+          <span>Niveau approuvé</span>
+          <div className="segmented-control">
+            {(["low", "medium", "high"] as RiskLabel[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={priorityLevel === option ? "segment-button segment-button-active" : "segment-button"}
+                onClick={() => setPriorityLevel(option)}
+              >
+                {translateRiskLabel(option)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="review-field">
+          <span>Statut</span>
+          <div className="segmented-control segmented-control-wrap">
+            {REVIEW_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={reviewStatus === option.value ? "segment-button segment-button-active" : "segment-button"}
+                onClick={() => setReviewStatus(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="review-form-grid">
+          <label className="review-field">
+            <span>Score numérique (0-10, optionnel)</span>
+            <input
+              type="number"
+              min={0}
+              max={10}
+              step={1}
+              value={priorityScore}
+              onChange={(event) => setPriorityScore(event.target.value)}
+              placeholder="Laisser vide"
+            />
+          </label>
+
+          <label className="review-field">
+            <span>Disposition (optionnel)</span>
+            <select
+              value={suggestedAction}
+              onChange={(event) => setSuggestedAction(event.target.value as ClinicianSuggestedAction | "")}
+            >
+              <option value="">Aucune</option>
+              {SUGGESTED_ACTION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="review-field">
+          <span>Tags raison</span>
+          <div className="checkbox-chip-grid">
+            {REASON_TAG_OPTIONS.map((option) => (
+              <label key={option.value} className={reasonTags.includes(option.value) ? "checkbox-chip checkbox-chip-active" : "checkbox-chip"}>
+                <input
+                  type="checkbox"
+                  checked={reasonTags.includes(option.value)}
+                  onChange={() => toggleReasonTag(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <label className="review-field">
+          <span>Note libre</span>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            rows={3}
+            placeholder="Raison clinique ou point de vigilance"
+          />
+        </label>
+
+        {saveError ? <p className="review-feedback review-feedback-error">{saveError}</p> : null}
+        {saveMessage ? <p className="review-feedback review-feedback-success">{saveMessage}</p> : null}
+
+        <div className="review-form-actions">
+          <button type="submit" className="primary-button" disabled={isSaving}>
+            {isSaving ? "Enregistrement..." : existingReview ? "Mettre à jour" : "Enregistrer"}
+          </button>
+          <div className="review-traceability">
+            <span className="review-panel-subtitle">Trace analytique</span>
+            <code>{medication.modeling__row_id ?? "indisponible"}</code>
+          </div>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function MedicationAlertCard({
+  medication,
+  expanded,
+  onToggle,
+  reviewerId,
+  onReviewerIdChange,
+  onReviewSaved,
+  reviewContext,
+}: MedicationAlertCardProps) {
   const evidence = evidenceEntries(medication);
   const classBadges = medicationClassBadges(medication);
   const detailsId = `medication-details-${medicationCardId(medication)}`;
@@ -416,6 +849,14 @@ function MedicationAlertCard({ medication, expanded, onToggle }: MedicationAlert
               </div>
             </section>
           ) : null}
+
+          <PharmacistReviewPanel
+            medication={medication}
+            reviewerId={reviewerId}
+            onReviewerIdChange={onReviewerIdChange}
+            onReviewSaved={onReviewSaved}
+            reviewContext={reviewContext}
+          />
         </div>
       )}
     </article>
@@ -467,27 +908,36 @@ export function RecordDetailsPage() {
   const [expandedMedicationIds, setExpandedMedicationIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reviewerId, setReviewerId] = useState<string>(reviewerIdInitialValue);
 
   useEffect(() => {
-    async function loadRecord() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const nextRecord = await getPatientDetail(subjectId, { hadmId: selectedHadmId });
-        setRecord(nextRecord);
-        setExpandedMedicationIds([]);
-      } catch (caughtError) {
-        const detail =
-          caughtError instanceof Error && caughtError.message
-            ? ` Détail: ${caughtError.message}`
-            : "";
-        setError(`Impossible de charger le dossier patient sélectionné.${detail}`);
-      } finally {
-        setIsLoading(false);
-      }
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(REVIEWER_ID_STORAGE_KEY, reviewerId);
     }
+  }, [reviewerId]);
 
-    void loadRecord();
+  async function loadRecord(options?: { resetExpanded?: boolean }) {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const nextRecord = await getPatientDetail(subjectId, { hadmId: selectedHadmId });
+      setRecord(nextRecord);
+      if (options?.resetExpanded ?? true) {
+        setExpandedMedicationIds([]);
+      }
+    } catch (caughtError) {
+      const detail =
+        caughtError instanceof Error && caughtError.message
+          ? ` Détail: ${caughtError.message}`
+          : "";
+      setError(`Impossible de charger le dossier patient sélectionné.${detail}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadRecord({ resetExpanded: true });
   }, [selectedHadmId, subjectId]);
 
   function toggleMedication(cardId: string) {
@@ -538,6 +988,14 @@ export function RecordDetailsPage() {
             const currentFlaggedMedicationCount =
               record.current_flagged_medication_count ?? record.flagged_medication_count;
             const reviewSummary = reviewTimestampSummary(record);
+            const reviewContext = buildMedicationReviewContext(record);
+            const reviewQueueSummary: ReviewQueueSummary = record.review_queue_summary ?? {
+              reviewable_rows: 0,
+              reviewed_rows: 0,
+              unreviewed_rows: 0,
+              priority_rows: 0,
+              disagreement_candidate_rows: 0,
+            };
 
             return (
           <article className="details-main">
@@ -736,6 +1194,26 @@ export function RecordDetailsPage() {
                       <p className="details-section-copy">
                         Tri décroissant par priorité actuelle de revue pharmaco-clinique.
                       </p>
+                      <p className="details-section-copy">
+                        Repères de tri heuristiques pour trouver plus vite les cas utiles à revoir.
+                        Ils n’impliquent ni certitude de modèle ni validation clinique complète.
+                      </p>
+                      <div className="chip-row review-queue-summary-row">
+                        <span className="chip chip-neutral">
+                          Revuables {reviewQueueSummary.reviewable_rows}
+                        </span>
+                        <span className="chip chip-neutral">
+                          Déjà revus {reviewQueueSummary.reviewed_rows}
+                        </span>
+                        <span className="chip chip-medium">
+                          Prioritaires {reviewQueueSummary.priority_rows}
+                        </span>
+                        {reviewQueueSummary.disagreement_candidate_rows > 0 ? (
+                          <span className="chip chip-high">
+                            Désaccords {reviewQueueSummary.disagreement_candidate_rows}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="medication-list-controls">
                       <button type="button" className="list-control-button" onClick={expandAllMedications}>
@@ -755,6 +1233,10 @@ export function RecordDetailsPage() {
                             medication={medication}
                             expanded={expandedMedicationIds.includes(medicationCardId(medication))}
                             onToggle={() => toggleMedication(medicationCardId(medication))}
+                            reviewerId={reviewerId}
+                            onReviewerIdChange={setReviewerId}
+                            onReviewSaved={() => loadRecord({ resetExpanded: false })}
+                            reviewContext={reviewContext}
                           />
                         ))
                       ) : (
@@ -782,6 +1264,10 @@ export function RecordDetailsPage() {
                             medication={medication}
                             expanded={expandedMedicationIds.includes(`history-${medicationCardId(medication)}`)}
                             onToggle={() => toggleMedication(`history-${medicationCardId(medication)}`)}
+                            reviewerId={reviewerId}
+                            onReviewerIdChange={setReviewerId}
+                            onReviewSaved={() => loadRecord({ resetExpanded: false })}
+                            reviewContext={reviewContext}
                           />
                         ))}
                       </div>

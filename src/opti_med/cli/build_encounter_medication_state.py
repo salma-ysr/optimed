@@ -6,10 +6,14 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
+
+from opti_med.cohort import limit_eligibility_to_subject_count
 from opti_med.config import Settings
+from opti_med.data_access.artifact_schemas import validate_older_adult_eligibility_artifact
 from opti_med.data_access.encounter_medication_state import (
     DEFAULT_ENCOUNTER_MEDICATION_STATE_POLICY,
-    LOOKUP_MODE_CACHE_FIRST,
+    LOOKUP_MODE_DISABLED,
     EncounterMedicationStateArtifactBuilder,
     summarize_encounter_medication_state,
 )
@@ -22,13 +26,19 @@ from opti_med.time_semantics import validate_review_time_policy
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description="Build the encounter-medication-state analytical artifact."
+        description="Build the 65+ encounter-medication-state analytical artifact."
     )
     parser.add_argument(
         "--standardized-root",
         type=Path,
         default=None,
         help="Root directory containing standardized source tables and upstream artifacts.",
+    )
+    parser.add_argument(
+        "--analytical-root",
+        type=Path,
+        default=None,
+        help="Root directory containing older-adult analytical artifacts.",
     )
     parser.add_argument(
         "--review-time-policy",
@@ -41,11 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         default=None,
-        help="Output Parquet path for encounter_medication_state.",
+        help="Output Parquet path for encounter_medication_state_65plus.",
     )
     parser.add_argument(
         "--rxnorm-lookup-mode",
-        default=LOOKUP_MODE_CACHE_FIRST,
+        default=LOOKUP_MODE_DISABLED,
         help="RxNorm lookup mode: disabled, cache_first, or cache_only.",
     )
     parser.add_argument(
@@ -60,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional Markdown QC report path for the encounter-medication-state artifact.",
     )
+    parser.add_argument(
+        "--eligibility-path",
+        type=Path,
+        default=None,
+        help="Optional Parquet path for the eligible encounter artifact to consume.",
+    )
+    parser.add_argument(
+        "--max-subjects",
+        type=int,
+        default=None,
+        help="Optional deterministic limit on unique eligible subjects, ordered by subject_id ascending.",
+    )
     return parser
 
 
@@ -70,6 +92,7 @@ def main() -> int:
     settings = replace(
         base_settings,
         standardized_root=args.standardized_root or base_settings.standardized_root,
+        analytical_root=args.analytical_root or base_settings.analytical_root,
     )
     review_time_policy = (
         validate_review_time_policy(args.review_time_policy)
@@ -81,9 +104,20 @@ def main() -> int:
         review_time_policy=review_time_policy,
         semantic_lookup_mode=args.rxnorm_lookup_mode,
     )
+    eligible_encounters = None
+    if args.eligibility_path is not None or args.max_subjects is not None:
+        eligibility_path = args.eligibility_path or settings.older_adult_eligibility_output_path
+        eligible_encounters = pd.read_parquet(eligibility_path)
+        validate_older_adult_eligibility_artifact(eligible_encounters)
+        eligible_encounters = limit_eligibility_to_subject_count(
+            eligible_encounters,
+            args.max_subjects,
+        )
 
     try:
-        encounter_medication_state = builder.build()
+        encounter_medication_state = builder.build(
+            eligible_encounters=eligible_encounters,
+        )
         result = builder.save(
             encounter_medication_state,
             output_path=args.output or settings.encounter_medication_state_output_path,
@@ -108,10 +142,15 @@ def main() -> int:
         print(f"ERROR: {exc}")
         return 1
 
-    print("Built encounter_medication_state successfully.")
+    print("Built encounter_medication_state_65plus successfully.")
     print(f"Standardized root: {settings.standardized_root}")
+    print(f"Analytical root: {settings.analytical_root}")
     print(f"Review-time policy: {review_time_policy.value}")
     print(f"RxNorm lookup mode: {args.rxnorm_lookup_mode}")
+    if args.eligibility_path is not None:
+        print(f"Eligibility path: {args.eligibility_path}")
+    if args.max_subjects is not None:
+        print(f"Max subjects: {args.max_subjects}")
     print(f"Output: {result.output_path}")
     if mapping_result is not None:
         print(f"Medication RxNorm mapping output: {mapping_result.output_path}")

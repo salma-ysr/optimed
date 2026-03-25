@@ -95,6 +95,32 @@ class StandardizedParquetRepository:
         """Return the standardized analytical artifact path."""
         return self.settings.standardized_root / f"{artifact_name}.parquet"
 
+    def source_table_standardized_reference(
+        self,
+        dataset_name: str,
+        table_name: str,
+    ) -> dict[str, object] | None:
+        """Return the standardized reference metadata for one source table when available."""
+        manifest_entry = self._manifest_entry(dataset_name, table_name)
+        if manifest_entry is None:
+            return None
+        standardized_reference = manifest_entry.get("standardized_reference")
+        if isinstance(standardized_reference, dict):
+            return dict(standardized_reference)
+        return None
+
+    def source_table_row_count(
+        self,
+        dataset_name: str,
+        table_name: str,
+    ) -> int | None:
+        """Return the manifest row count for one standardized source table when available."""
+        manifest_entry = self._manifest_entry(dataset_name, table_name)
+        if manifest_entry is None:
+            return None
+        row_count = manifest_entry.get("row_count")
+        return int(row_count) if row_count is not None else None
+
     def load_analytical_artifact(self, artifact_name: str) -> pd.DataFrame:
         """Load one persisted analytical artifact from Parquet."""
         path = self.analytical_artifact_path(artifact_name)

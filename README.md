@@ -244,6 +244,28 @@ This layer adds:
 - opioid MME readiness scaffolding
 - renal-dose mismatch readiness scaffolding
 
+### 6. Build The Phase 2.5 Modeling Hand-Off
+
+Materialize the modeling-ready dataset, deterministic subject-safe splits, feature-list JSON, and QC report for the canonical 65+ first-scope branch:
+
+```bash
+python3 -m opti_med.cli.build_first_scope_modeling_handoff \
+  --analytical-root data/analytical \
+  --feature-store-root data/feature_store \
+  --label-root data/labels \
+  --modeling-root data/modeling \
+  --dataset-output data/modeling/encounter_medication_dataset_v1_65plus_first_scope.parquet \
+  --feature-list-output data/modeling/feature_list_v1_65plus_first_scope.json \
+  --splits-output data/modeling/splits_v1_65plus_first_scope.parquet \
+  --qc-output docs/ml_pivot/17a_dataset_v1_65plus_first_scope_qc.md
+```
+
+The canonical training boundary remains:
+
+- train only on rows where `meta__dataset_row_eligible_for_training_flag == 1`
+- use only `feature__*` columns as trainable inputs
+- keep `benchmark__*` columns for baseline comparison and fallback only
+
 ## Current Artifact Map
 
 Standardized root:
@@ -259,6 +281,12 @@ Analytical root:
 - `medication_rxnorm_mapping.parquet`
 - `encounter_medication_semantics.parquet`
 - `encounter_medication_burden.parquet`
+
+Modeling root:
+
+- `data/modeling/encounter_medication_dataset_v1_65plus_first_scope.parquet`
+- `data/modeling/splits_v1_65plus_first_scope.parquet`
+- `data/modeling/feature_list_v1_65plus_first_scope.json`
 
 Legacy CSV outputs:
 

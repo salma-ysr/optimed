@@ -7,7 +7,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+import pyarrow.parquet as pq
 
+from opti_med.cohort import semi_join_to_eligible_encounters
 from opti_med.config import Settings
 from opti_med.data_access.artifact_schemas import (
     ENCOUNTER_MEDICATION_STATE_COLUMNS,
@@ -16,7 +18,9 @@ from opti_med.data_access.artifact_schemas import (
     validate_encounter_medication_state_artifact,
     validate_medication_events_artifact,
     validate_medication_rxnorm_mapping_artifact,
+    validate_older_adult_eligibility_artifact,
 )
+from opti_med.data_access.exceptions import DataLoadError
 from opti_med.data_access.medication_rxnorm_mapping import (
     LOOKUP_MODE_CACHE_FIRST,
     LOOKUP_MODE_CACHE_ONLY,
@@ -32,6 +36,7 @@ from opti_med.data_access.medication_snapshot import (
 from opti_med.data_access.provenance import dumps_json, loads_json_or_none
 from opti_med.medication_semantics import RxNormBackedMedicationSemanticMapper
 from opti_med.standardized import StandardizedParquetRepository
+from opti_med.standardized.specs import get_table_spec
 from opti_med.state import (
     EncounterMedicationStateBuilder,
     EncounterMedicationStateRow,
@@ -39,6 +44,8 @@ from opti_med.state import (
 from opti_med.time_semantics import (
     MEDICATION_STATUS_ACTIVE_AT_REVIEW,
     MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW,
+    MEDICATION_STATUS_INACTIVE_BEFORE_REVIEW,
+    MEDICATION_STATUS_PRE_ADMISSION_ONLY,
     REVIEW_TIMESTAMP_SOURCE_ENCOUNTER_BOUNDARY,
     ReviewTimePolicyName,
     ReviewTimeViolationError,
@@ -49,12 +56,42 @@ from opti_med.time_semantics import (
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_ENCOUNTER_MEDICATION_STATE_OUTPUT_PATH = Path(
-    "data/analytical/encounter_medication_state.parquet"
+    "data/analytical/encounter_medication_state_65plus.parquet"
 )
 DEFAULT_ENCOUNTER_MEDICATION_STATE_POLICY = (
     ReviewTimePolicyName.DISCHARGE_CAPPED_LATEST_AVAILABLE
 )
 LOOKUP_MODE_DISABLED = "disabled"
+STATE_BUILD_MEDICATION_EVENT_COLUMNS = [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "encounter_id",
+    "encounter_start",
+    "encounter_end",
+    "medication_event_id",
+    "medication_event_type",
+    "event_source_table",
+    "raw_medication_name",
+    "medication_name",
+    "medication_normalized",
+    "event_time",
+    "starttime",
+    "stoptime",
+    "route",
+    "frequency",
+    "status",
+    "pharmacy_enriched_flag",
+    "continued_from_home_inferred",
+    "newly_started_during_encounter_inferred",
+    "source_home_medrecon",
+    "source_ed_pyxis",
+    "source_hospital_order",
+    "source_hospital_admin",
+    "source_tables_json",
+    "source_record_provenance_json",
+]
+STATE_BUILD_LABEVENT_COLUMNS = ["hadm_id", "charttime"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +117,7 @@ class ReviewTimestampResolution:
 
 
 class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
-    """Build one row per encounter medication candidate at review time."""
+    """Build one row per medication candidate for eligible 65+ encounters at review time."""
 
     def __init__(
         self,
@@ -115,24 +152,55 @@ class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
         *,
         encounter_index: pd.DataFrame | None = None,
         medication_events: pd.DataFrame | None = None,
+        eligible_encounters: pd.DataFrame | None = None,
         medication_rxnorm_mapping: pd.DataFrame | None = None,
         labevents: pd.DataFrame | None = None,
         triage: pd.DataFrame | None = None,
         vitalsign: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
-        """Build the persisted encounter-medication-state artifact."""
+        """Build the persisted 65+ encounter-medication-state artifact."""
         encounter_index = (
             encounter_index
             if encounter_index is not None
             else self.repository.load_analytical_artifact("encounter_index")
         )
-        medication_events = (
-            medication_events
-            if medication_events is not None
-            else self.repository.load_analytical_artifact("medication_events")
+        eligible_encounters = (
+            eligible_encounters
+            if eligible_encounters is not None
+            else _load_required_parquet(self.settings.older_adult_eligibility_output_path)
         )
         validate_encounter_index_artifact(encounter_index)
-        validate_medication_events_artifact(medication_events)
+        validate_older_adult_eligibility_artifact(eligible_encounters)
+        encounter_index = semi_join_to_eligible_encounters(
+            encounter_index,
+            eligible_encounters,
+        ).reset_index(drop=True)
+        if encounter_index.empty:
+            return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
+
+        if medication_events is None:
+            medication_event_columns = (
+                None
+                if self.semantic_lookup_mode != LOOKUP_MODE_DISABLED
+                else STATE_BUILD_MEDICATION_EVENT_COLUMNS
+            )
+            medication_events = _load_filtered_medication_events_for_eligible_encounters(
+                repository=self.repository,
+                eligible_encounters=eligible_encounters,
+                columns=medication_event_columns,
+            )
+            if medication_event_columns is None:
+                validate_medication_events_artifact(medication_events)
+            else:
+                _validate_state_build_medication_event_input(medication_events)
+        else:
+            validate_medication_events_artifact(medication_events)
+            medication_events = semi_join_to_eligible_encounters(
+                medication_events,
+                eligible_encounters,
+            ).reset_index(drop=True)
+        if medication_events.empty:
+            return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
 
         if medication_rxnorm_mapping is None and self.semantic_lookup_mode != LOOKUP_MODE_DISABLED:
             mapping_builder = MedicationRxNormMappingBuilder(
@@ -147,27 +215,40 @@ class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
             validate_medication_rxnorm_mapping_artifact(medication_rxnorm_mapping)
         self.last_medication_rxnorm_mapping = medication_rxnorm_mapping
 
-        if labevents is None:
-            loaded = self.repository.load_optional_source_table(
-                "clinical",
-                "labevents",
-                columns=["hadm_id", "charttime"],
+        supporting_review_time_encounters = identify_supporting_review_time_encounters(
+            encounter_index=encounter_index,
+            medication_events=medication_events,
+        )
+        if supporting_review_time_encounters.empty:
+            labevents = None
+            triage = None
+            vitalsign = None
+        else:
+            if labevents is None:
+                labevents = _load_filtered_labevents_for_encounters(
+                    repository=self.repository,
+                    encounter_index=supporting_review_time_encounters,
+                )
+            if triage is None:
+                loaded = self.repository.load_optional_source_table(
+                    "ed",
+                    "triage",
+                    columns=["subject_id", "stay_id", "charttime"],
+                )
+                triage = loaded.dataframe if loaded else None
+            if vitalsign is None:
+                loaded = self.repository.load_optional_source_table(
+                    "ed",
+                    "vitalsign",
+                    columns=["subject_id", "stay_id", "charttime"],
+                )
+                vitalsign = loaded.dataframe if loaded else None
+            labevents, triage, vitalsign = filter_supporting_review_time_inputs_to_encounters(
+                encounter_index=supporting_review_time_encounters,
+                labevents=labevents,
+                triage=triage,
+                vitalsign=vitalsign,
             )
-            labevents = loaded.dataframe if loaded else None
-        if triage is None:
-            loaded = self.repository.load_optional_source_table(
-                "ed",
-                "triage",
-                columns=["subject_id", "stay_id", "intime"],
-            )
-            triage = loaded.dataframe if loaded else None
-        if vitalsign is None:
-            loaded = self.repository.load_optional_source_table(
-                "ed",
-                "vitalsign",
-                columns=["subject_id", "stay_id", "charttime"],
-            )
-            vitalsign = loaded.dataframe if loaded else None
 
         dataframe = build_encounter_medication_state(
             encounter_index=encounter_index,
@@ -186,6 +267,7 @@ class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
         *,
         encounter_index: pd.DataFrame | None = None,
         medication_events: pd.DataFrame | None = None,
+        eligible_encounters: pd.DataFrame | None = None,
         medication_rxnorm_mapping: pd.DataFrame | None = None,
         labevents: pd.DataFrame | None = None,
         triage: pd.DataFrame | None = None,
@@ -195,6 +277,7 @@ class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
         dataframe = self.build(
             encounter_index=encounter_index,
             medication_events=medication_events,
+            eligible_encounters=eligible_encounters,
             medication_rxnorm_mapping=medication_rxnorm_mapping,
             labevents=labevents,
             triage=triage,
@@ -232,6 +315,8 @@ class EncounterMedicationStateArtifactBuilder(EncounterMedicationStateBuilder):
                     hadm_id=_int_or_none(record.get("hadm_id")),
                     stay_id=_int_or_none(record.get("stay_id")),
                     review_timestamp_source=record.get("review_timestamp_source"),
+                    age_proxy=_float_or_none(record.get("age_proxy")),
+                    age_group=record.get("age_group"),
                     medication_raw=record.get("medication_raw"),
                     medication_normalized=record.get("medication_normalized"),
                     medication_standardized=record.get("medication_standardized"),
@@ -306,12 +391,12 @@ def build_encounter_medication_state(
     triage: pd.DataFrame | None = None,
     vitalsign: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Build one row per encounter-review-time medication candidate."""
+    """Build one row per review-time medication candidate for eligible encounters."""
     if encounter_index.empty or medication_events.empty:
         return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
 
     policy_name = validate_review_time_policy(review_time_policy)
-    build_run_id = f"encounter-medication-state-{uuid4().hex[:12]}"
+    build_run_id = f"encounter-medication-state-65plus-{uuid4().hex[:12]}"
     encounter_rows = encounter_index.drop_duplicates(subset=["encounter_id"]).copy()
     encounter_rows = encounter_rows.sort_values(
         ["subject_id", "encounter_start", "encounter_id"],
@@ -319,10 +404,7 @@ def build_encounter_medication_state(
     )
 
     events = medication_events.copy()
-    events["_medication_candidate_key"] = events.apply(
-        _medication_candidate_key,
-        axis=1,
-    )
+    events["_medication_candidate_key"] = _medication_candidate_keys(events)
     events = events.loc[events["_medication_candidate_key"].notna()].copy()
     if events.empty:
         return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
@@ -333,35 +415,32 @@ def build_encounter_medication_state(
         )
     else:
         events = _apply_unresolved_semantic_defaults(events)
+    encounter_rows_by_id = {
+        str(row["encounter_id"]): row for row in encounter_rows.to_dict(orient="records")
+    }
+    latest_lab_timestamp_by_hadm_id = _latest_lab_timestamp_by_hadm_id(labevents)
+    latest_vitals_timestamp_by_subject_stay = _latest_vitals_timestamp_by_subject_stay(
+        triage=triage,
+        vitalsign=vitalsign,
+    )
+    review_resolutions = _resolve_review_timestamps_for_encounters(
+        encounter_rows_by_id=encounter_rows_by_id,
+        medication_events=events,
+        labevents=labevents,
+        triage=triage,
+        vitalsign=vitalsign,
+        review_time_policy=policy_name,
+        latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+        latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
+    )
+    if review_resolutions.empty:
+        return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
 
-    review_rows: list[dict[str, object]] = []
-    for encounter in encounter_rows.to_dict(orient="records"):
-        encounter_events = events.loc[
-            events["encounter_id"] == encounter["encounter_id"]
-        ].copy()
-        if encounter_events.empty:
-            continue
-
-        review_resolution = resolve_policy_safe_review_timestamp_for_encounter(
-            encounter=encounter,
-            medication_events=events,
-            labevents=labevents,
-            triage=triage,
-            vitalsign=vitalsign,
-            review_time_policy=policy_name,
-        )
-        if pd.isna(review_resolution.review_timestamp):
-            continue
-
-        review_rows.extend(
-            _encounter_medication_state_rows_for_encounter(
-                encounter=encounter,
-                encounter_events=encounter_events,
-                review_resolution=review_resolution,
-            )
-        )
-
-    review = pd.DataFrame(review_rows)
+    review = _materialize_encounter_medication_state_rows(
+        encounter_rows_by_id=encounter_rows_by_id,
+        medication_events=events,
+        review_resolutions=review_resolutions,
+    )
     if review.empty:
         return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
 
@@ -378,6 +457,374 @@ def build_encounter_medication_state(
     return review
 
 
+def _resolve_review_timestamps_for_encounters(
+    *,
+    encounter_rows_by_id: dict[str, dict[str, object]],
+    medication_events: pd.DataFrame,
+    labevents: pd.DataFrame | None,
+    triage: pd.DataFrame | None,
+    vitalsign: pd.DataFrame | None,
+    review_time_policy: ReviewTimePolicyName | str,
+    latest_lab_timestamp_by_hadm_id: dict[int, pd.Timestamp] | None,
+    latest_vitals_timestamp_by_subject_stay: dict[tuple[int, int], pd.Timestamp] | None,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for encounter_id, encounter_events in medication_events.groupby(
+        "encounter_id",
+        dropna=False,
+        sort=False,
+    ):
+        encounter = encounter_rows_by_id.get(str(encounter_id))
+        if encounter is None or encounter_events.empty:
+            continue
+
+        review_resolution = resolve_policy_safe_review_timestamp_for_encounter(
+            encounter=encounter,
+            medication_events=encounter_events,
+            labevents=labevents,
+            triage=triage,
+            vitalsign=vitalsign,
+            review_time_policy=review_time_policy,
+            latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+            latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
+        )
+        if pd.isna(review_resolution.review_timestamp):
+            continue
+
+        rows.append(
+            {
+                "encounter_id": encounter_id,
+                "review_timestamp": review_resolution.review_timestamp,
+                "review_timestamp_source": review_resolution.review_timestamp_source,
+                "review_time_policy_name": review_resolution.review_time_policy_name,
+                "review_timestamp_candidate": review_resolution.review_timestamp_candidate,
+                "review_timestamp_candidate_source": (
+                    review_resolution.review_timestamp_candidate_source
+                ),
+                "review_time_capped_to_discharge_flag": int(
+                    review_resolution.review_time_capped_to_discharge_flag
+                ),
+                "review_time_validated_flag": int(
+                    review_resolution.review_time_validated_flag
+                ),
+                "discharge_boundary": review_resolution.discharge_boundary,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "encounter_id",
+                "review_timestamp",
+                "review_timestamp_source",
+                "review_time_policy_name",
+                "review_timestamp_candidate",
+                "review_timestamp_candidate_source",
+                "review_time_capped_to_discharge_flag",
+                "review_time_validated_flag",
+                "discharge_boundary",
+            ]
+        )
+    return pd.DataFrame(rows)
+
+
+def _materialize_encounter_medication_state_rows(
+    *,
+    encounter_rows_by_id: dict[str, dict[str, object]],
+    medication_events: pd.DataFrame,
+    review_resolutions: pd.DataFrame,
+) -> pd.DataFrame:
+    group_keys = ["encounter_id", "_medication_standardized_key"]
+    review_lookup = {
+        str(row["encounter_id"]): row for row in review_resolutions.to_dict(orient="records")
+    }
+    events = medication_events.merge(
+        review_resolutions.loc[:, ["encounter_id", "review_timestamp"]],
+        how="inner",
+        on="encounter_id",
+        validate="many_to_one",
+    )
+    if events.empty:
+        return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
+
+    events = _prepare_review_state_events(events)
+    grouped = events.groupby(group_keys, dropna=False, sort=True)
+    group_summary = _summarize_review_event_groups(grouped)
+    if group_summary.empty:
+        return pd.DataFrame(columns=ENCOUNTER_MEDICATION_STATE_COLUMNS)
+
+    summary_lookup = {
+        _review_group_key(row["encounter_id"], row["_medication_standardized_key"]): row
+        for row in group_summary.to_dict(orient="records")
+    }
+    representative_lookup = _representative_review_event_lookup(
+        events=events,
+        group_summary=group_summary,
+    )
+
+    review_rows: list[dict[str, object]] = []
+    for (encounter_id, medication_standardized_key), group in grouped:
+        group_key = _review_group_key(encounter_id, medication_standardized_key)
+        encounter = encounter_rows_by_id.get(group_key[0])
+        representative = representative_lookup.get(group_key)
+        summary = summary_lookup.get(group_key)
+        review_resolution = review_lookup.get(group_key[0])
+        if (
+            encounter is None
+            or representative is None
+            or summary is None
+            or review_resolution is None
+        ):
+            continue
+
+        source_tables_json = _source_tables_json_for_group(group)
+        source_record_provenance_json = _source_record_provenance_json_for_group(group)
+        semantic_fields = _aggregate_semantic_fields(group, representative=representative)
+        review_rows.append(
+            {
+                "subject_id": _coalesce_identifier(
+                    representative.get("subject_id"),
+                    encounter.get("subject_id"),
+                ),
+                "encounter_id": encounter["encounter_id"],
+                "hadm_id": _coalesce_identifier(
+                    representative.get("hadm_id"),
+                    encounter.get("hadm_id"),
+                ),
+                "stay_id": _coalesce_identifier(
+                    representative.get("stay_id"),
+                    encounter.get("stay_id"),
+                ),
+                "review_timestamp": _format_timestamp(review_resolution["review_timestamp"]),
+                "review_timestamp_source": review_resolution["review_timestamp_source"],
+                "age_proxy": _float_or_none(encounter.get("age_proxy")),
+                "age_group": encounter.get("age_group"),
+                "review_time_policy_name": review_resolution["review_time_policy_name"],
+                "review_timestamp_candidate": _format_timestamp(
+                    review_resolution["review_timestamp_candidate"]
+                ),
+                "review_timestamp_candidate_source": review_resolution[
+                    "review_timestamp_candidate_source"
+                ],
+                "review_time_capped_to_discharge_flag": int(
+                    review_resolution["review_time_capped_to_discharge_flag"]
+                ),
+                "review_time_validated_flag": int(
+                    review_resolution["review_time_validated_flag"]
+                ),
+                "discharge_boundary": _format_timestamp(
+                    review_resolution["discharge_boundary"]
+                ),
+                "medication_raw": representative.get("raw_medication_name"),
+                "medication_normalized": representative.get("medication_normalized"),
+                "medication_standardized": str(medication_standardized_key),
+                "medication_standardized_source": semantic_fields[
+                    "medication_standardized_source"
+                ],
+                "rxnorm_rxcui": semantic_fields["rxnorm_rxcui"],
+                "rxnorm_matched_term": semantic_fields["rxnorm_matched_term"],
+                "rxnorm_term_type": semantic_fields["rxnorm_term_type"],
+                "ingredient_standardized": semantic_fields["ingredient_standardized"],
+                "ingredient_resolution_status": semantic_fields[
+                    "ingredient_resolution_status"
+                ],
+                "mapping_confidence": semantic_fields["mapping_confidence"],
+                "ambiguous_mapping_flag": semantic_fields["ambiguous_mapping_flag"],
+                "mapping_candidate_count": semantic_fields["mapping_candidate_count"],
+                "medication_mapping_lookup_strategy": semantic_fields[
+                    "medication_mapping_lookup_strategy"
+                ],
+                "medication_class_standardized": semantic_fields[
+                    "medication_class_standardized"
+                ],
+                "medication_status_at_review": summary["medication_status_at_review"],
+                "active_at_review_flag": int(summary["active_at_review_flag"]),
+                "continued_from_home_inferred": int(
+                    summary["continued_from_home_inferred"]
+                ),
+                "newly_started_during_encounter_inferred": int(
+                    summary["newly_started_during_encounter_inferred"]
+                ),
+                "route": representative.get("route"),
+                "frequency": representative.get("frequency"),
+                "status": representative.get("status"),
+                "selected_medication_event_id": representative.get("medication_event_id"),
+                "selected_medication_event_type": representative.get(
+                    "medication_event_type"
+                ),
+                "active_event_count_at_review": int(
+                    summary["active_event_count_at_review"]
+                ),
+                "candidate_event_count": int(summary["candidate_event_count"]),
+                "source_home_medrecon_flag": int(summary["source_home_medrecon_flag"]),
+                "source_ed_pyxis_flag": int(summary["source_ed_pyxis_flag"]),
+                "source_hospital_order_flag": int(
+                    summary["source_hospital_order_flag"]
+                ),
+                "source_hospital_admin_flag": int(
+                    summary["source_hospital_admin_flag"]
+                ),
+                "source_tables_json": source_tables_json,
+                "source_record_provenance_json": source_record_provenance_json,
+            }
+        )
+
+    return pd.DataFrame(review_rows)
+
+
+def _prepare_review_state_events(events: pd.DataFrame) -> pd.DataFrame:
+    prepared = events.copy()
+    prepared["review_timestamp"] = pd.to_datetime(
+        prepared["review_timestamp"],
+        errors="coerce",
+        format=TIMESTAMP_FORMAT,
+    )
+    prepared["_event_start"] = _encounter_state_event_start_series(prepared)
+    prepared["_event_stop"] = pd.to_datetime(
+        prepared.get("stoptime", pd.Series(pd.NaT, index=prepared.index)),
+        errors="coerce",
+        format=TIMESTAMP_FORMAT,
+    )
+    prepared["_continued_from_home_int"] = _state_int_series(
+        prepared.get("continued_from_home_inferred"),
+        index=prepared.index,
+    )
+    prepared["_newly_started_int"] = _state_int_series(
+        prepared.get("newly_started_during_encounter_inferred"),
+        index=prepared.index,
+    )
+    prepared["_source_home_medrecon_int"] = _state_int_series(
+        prepared.get("source_home_medrecon"),
+        index=prepared.index,
+    )
+    prepared["_source_ed_pyxis_int"] = _state_int_series(
+        prepared.get("source_ed_pyxis"),
+        index=prepared.index,
+    )
+    prepared["_source_hospital_order_int"] = _state_int_series(
+        prepared.get("source_hospital_order"),
+        index=prepared.index,
+    )
+    prepared["_source_hospital_admin_int"] = _state_int_series(
+        prepared.get("source_hospital_admin"),
+        index=prepared.index,
+    )
+    prepared["_pharmacy_enriched_int"] = _state_int_series(
+        prepared.get("pharmacy_enriched_flag"),
+        index=prepared.index,
+    )
+    prepared["_priority_rank"] = _encounter_state_priority_rank_series(prepared)
+    prepared["_active_at_review_event"] = _active_event_mask_for_review_rows(
+        prepared
+    ).astype(int)
+    prepared["_non_home_event"] = (
+        prepared["_source_home_medrecon_int"] != 1
+    ).astype(int)
+    prepared["_active_non_home_event"] = (
+        (prepared["_active_at_review_event"] == 1)
+        & (prepared["_non_home_event"] == 1)
+    ).astype(int)
+    prepared["_non_home_event_start"] = prepared["_event_start"].where(
+        prepared["_non_home_event"] == 1
+    )
+    prepared["_non_home_event_stop"] = prepared["_event_stop"].where(
+        prepared["_non_home_event"] == 1
+    )
+    return prepared
+
+
+def _summarize_review_event_groups(
+    grouped: pd.core.groupby.generic.DataFrameGroupBy,
+) -> pd.DataFrame:
+    summary = grouped.agg(
+        review_timestamp=("review_timestamp", "first"),
+        active_event_count_at_review=("_active_at_review_event", "sum"),
+        active_non_home_event=("_active_non_home_event", "max"),
+        has_non_home=("_non_home_event", "max"),
+        latest_non_home_start=("_non_home_event_start", "max"),
+        latest_non_home_stop=("_non_home_event_stop", "max"),
+        continued_from_home_inferred=("_continued_from_home_int", "max"),
+        newly_started_during_encounter_inferred=("_newly_started_int", "max"),
+        source_home_medrecon_flag=("_source_home_medrecon_int", "max"),
+        source_ed_pyxis_flag=("_source_ed_pyxis_int", "max"),
+        source_hospital_order_flag=("_source_hospital_order_int", "max"),
+        source_hospital_admin_flag=("_source_hospital_admin_int", "max"),
+    ).join(grouped.size().rename("candidate_event_count"))
+    if summary.empty:
+        return summary.reset_index()
+
+    summary = summary.reset_index()
+    summary["latest_non_home_time"] = summary.loc[
+        :, ["latest_non_home_start", "latest_non_home_stop"]
+    ].max(axis=1)
+    status = pd.Series(
+        MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW,
+        index=summary.index,
+        dtype="object",
+    )
+    status = status.mask(
+        summary["active_non_home_event"] == 1,
+        MEDICATION_STATUS_ACTIVE_AT_REVIEW,
+    )
+    status = status.mask(
+        (summary["active_non_home_event"] != 1) & (summary["has_non_home"] != 1),
+        MEDICATION_STATUS_PRE_ADMISSION_ONLY,
+    )
+    inactive_mask = (
+        (status == MEDICATION_STATUS_ACTIVITY_UNCERTAIN_AT_REVIEW)
+        & summary["latest_non_home_time"].notna()
+        & summary["review_timestamp"].notna()
+        & (summary["latest_non_home_time"] < summary["review_timestamp"])
+    )
+    status = status.mask(
+        inactive_mask,
+        MEDICATION_STATUS_INACTIVE_BEFORE_REVIEW,
+    )
+    summary["medication_status_at_review"] = status
+    summary["active_at_review_flag"] = (
+        summary["medication_status_at_review"] == MEDICATION_STATUS_ACTIVE_AT_REVIEW
+    ).astype(int)
+    summary["group_has_active_event"] = (
+        summary["active_event_count_at_review"] > 0
+    ).astype(int)
+    return summary
+
+
+def _representative_review_event_lookup(
+    *,
+    events: pd.DataFrame,
+    group_summary: pd.DataFrame,
+) -> dict[tuple[str, str], dict[str, object]]:
+    group_keys = ["encounter_id", "_medication_standardized_key"]
+    ranked = events.merge(
+        group_summary.loc[:, group_keys + ["group_has_active_event"]],
+        how="left",
+        on=group_keys,
+        validate="many_to_one",
+    )
+    ranked["_representative_candidate_flag"] = (
+        ((ranked["group_has_active_event"] == 1) & (ranked["_active_at_review_event"] == 1))
+        | (ranked["group_has_active_event"] != 1)
+    ).astype(int)
+    ranked = ranked.sort_values(
+        group_keys
+        + [
+            "_representative_candidate_flag",
+            "_priority_rank",
+            "_event_start",
+            "_pharmacy_enriched_int",
+            "medication_event_id",
+        ],
+        ascending=[True, True, False, False, False, False, True],
+        na_position="last",
+    )
+    representatives = ranked.drop_duplicates(subset=group_keys, keep="first")
+    return {
+        _review_group_key(row["encounter_id"], row["_medication_standardized_key"]): row
+        for row in representatives.to_dict(orient="records")
+    }
+
+
 def resolve_policy_safe_review_timestamp_for_encounter(
     *,
     encounter: dict | pd.Series,
@@ -386,6 +833,8 @@ def resolve_policy_safe_review_timestamp_for_encounter(
     triage: pd.DataFrame | None = None,
     vitalsign: pd.DataFrame | None = None,
     review_time_policy: ReviewTimePolicyName | str = DEFAULT_ENCOUNTER_MEDICATION_STATE_POLICY,
+    latest_lab_timestamp_by_hadm_id: dict[int, pd.Timestamp] | None = None,
+    latest_vitals_timestamp_by_subject_stay: dict[tuple[int, int], pd.Timestamp] | None = None,
 ) -> ReviewTimestampResolution:
     """Resolve one encounter review timestamp under an explicit policy."""
     policy_name = validate_review_time_policy(review_time_policy)
@@ -397,6 +846,8 @@ def resolve_policy_safe_review_timestamp_for_encounter(
         labevents=labevents,
         triage=triage,
         vitalsign=vitalsign,
+        latest_lab_timestamp_by_hadm_id=latest_lab_timestamp_by_hadm_id,
+        latest_vitals_timestamp_by_subject_stay=latest_vitals_timestamp_by_subject_stay,
     )
     discharge_boundary = _encounter_discharge_boundary(encounter_row)
 
@@ -445,6 +896,7 @@ def calculate_encounter_medication_state_qc_metrics(
     if dataframe.empty:
         return {
             "row_count": 0,
+            "unique_encounter_count": 0,
             "review_timestamp_after_discharge_count": 0,
             "duplicate_key_count": 0,
             "counts_by_medication_status_at_review": {},
@@ -466,6 +918,7 @@ def calculate_encounter_medication_state_qc_metrics(
     )
     return {
         "row_count": int(len(dataframe)),
+        "unique_encounter_count": int(dataframe["encounter_id"].nunique()),
         "review_timestamp_after_discharge_count": int(after_discharge.sum()),
         "duplicate_key_count": int(
             dataframe.duplicated(
@@ -516,6 +969,286 @@ def summarize_encounter_medication_state(dataframe: pd.DataFrame) -> list[str]:
     ]
 
 
+def filter_state_inputs_to_eligible_encounters(
+    *,
+    encounter_index: pd.DataFrame,
+    medication_events: pd.DataFrame,
+    eligible_encounters: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Semi-join full encounter and medication inputs to the persisted 65+ encounter set."""
+    validate_encounter_index_artifact(encounter_index)
+    validate_medication_events_artifact(medication_events)
+    validate_older_adult_eligibility_artifact(eligible_encounters)
+    filtered_encounter_index = semi_join_to_eligible_encounters(
+        encounter_index,
+        eligible_encounters,
+    )
+    filtered_medication_events = semi_join_to_eligible_encounters(
+        medication_events,
+        eligible_encounters,
+    )
+    return (
+        filtered_encounter_index.reset_index(drop=True),
+        filtered_medication_events.reset_index(drop=True),
+    )
+
+
+def filter_supporting_review_time_inputs_to_encounters(
+    *,
+    encounter_index: pd.DataFrame,
+    labevents: pd.DataFrame | None,
+    triage: pd.DataFrame | None,
+    vitalsign: pd.DataFrame | None,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
+    """Restrict supporting review-time evidence tables to the eligible encounter context."""
+    hadm_ids = _identifier_set(encounter_index.get("hadm_id"))
+    stay_ids = _identifier_set(encounter_index.get("stay_id"))
+    subject_ids = _identifier_set(encounter_index.get("subject_id"))
+
+    filtered_labevents = labevents
+    if labevents is not None and not labevents.empty and "hadm_id" in labevents:
+        filtered_labevents = labevents.loc[
+            pd.to_numeric(labevents["hadm_id"], errors="coerce").isin(hadm_ids)
+        ].copy()
+
+    filtered_triage = triage
+    if triage is not None and not triage.empty:
+        filtered_triage = triage.copy()
+        if "stay_id" in filtered_triage:
+            filtered_triage = filtered_triage.loc[
+                pd.to_numeric(filtered_triage["stay_id"], errors="coerce").isin(stay_ids)
+            ].copy()
+        if "subject_id" in filtered_triage:
+            filtered_triage = filtered_triage.loc[
+                pd.to_numeric(filtered_triage["subject_id"], errors="coerce").isin(subject_ids)
+            ].copy()
+
+    filtered_vitalsign = vitalsign
+    if vitalsign is not None and not vitalsign.empty:
+        filtered_vitalsign = vitalsign.copy()
+        if "stay_id" in filtered_vitalsign:
+            filtered_vitalsign = filtered_vitalsign.loc[
+                pd.to_numeric(filtered_vitalsign["stay_id"], errors="coerce").isin(stay_ids)
+            ].copy()
+        if "subject_id" in filtered_vitalsign:
+            filtered_vitalsign = filtered_vitalsign.loc[
+                pd.to_numeric(filtered_vitalsign["subject_id"], errors="coerce").isin(subject_ids)
+            ].copy()
+
+    return filtered_labevents, filtered_triage, filtered_vitalsign
+
+
+def identify_supporting_review_time_encounters(
+    *,
+    encounter_index: pd.DataFrame,
+    medication_events: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return the subset of encounters that need non-medication evidence for review time."""
+    if encounter_index.empty or medication_events.empty:
+        return encounter_index.iloc[0:0].copy()
+
+    medication_supported_encounter_ids = _encounter_ids_with_medication_review_evidence(
+        medication_events
+    )
+    if not medication_supported_encounter_ids:
+        return encounter_index.copy()
+    encounter_ids = encounter_index["encounter_id"].astype(str)
+    return encounter_index.loc[
+        ~encounter_ids.isin(medication_supported_encounter_ids)
+    ].copy()
+
+
+def _load_filtered_medication_events_for_eligible_encounters(
+    *,
+    repository: StandardizedParquetRepository,
+    eligible_encounters: pd.DataFrame,
+    columns: list[str] | None,
+) -> pd.DataFrame:
+    encounter_ids = {
+        str(value).strip()
+        for value in eligible_encounters["encounter_id"].dropna().astype(str).tolist()
+        if str(value).strip()
+    }
+    path = repository.analytical_artifact_path("medication_events")
+    return _read_parquet_filtered_by_membership(
+        path=path,
+        membership_column="encounter_id",
+        allowed_values=encounter_ids,
+        columns=columns,
+    )
+
+
+def _load_filtered_labevents_for_encounters(
+    *,
+    repository: StandardizedParquetRepository,
+    encounter_index: pd.DataFrame,
+) -> pd.DataFrame | None:
+    hadm_ids = _identifier_set(encounter_index.get("hadm_id"))
+    if not hadm_ids:
+        return None
+    path = repository.source_table_path(get_table_spec("clinical", "labevents"))
+    if not path.exists():
+        return None
+    return _read_parquet_filtered_by_membership(
+        path=path,
+        membership_column="hadm_id",
+        allowed_values=hadm_ids,
+        columns=STATE_BUILD_LABEVENT_COLUMNS,
+    )
+
+
+def _read_parquet_filtered_by_membership(
+    *,
+    path: Path,
+    membership_column: str,
+    allowed_values: set[object],
+    columns: list[str] | None,
+    batch_size: int = 200_000,
+) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Expected Parquet artifact at '{path}', but it does not exist.")
+    if not allowed_values:
+        requested_columns = columns or [membership_column]
+        return pd.DataFrame(columns=requested_columns)
+
+    parquet_file = pq.ParquetFile(path)
+    filtered_batches: list[pd.DataFrame] = []
+    for batch in parquet_file.iter_batches(columns=columns, batch_size=batch_size):
+        batch_frame = batch.to_pandas()
+        if membership_column not in batch_frame:
+            raise DataLoadError(
+                f"Expected column '{membership_column}' while filtering Parquet artifact '{path}'."
+            )
+        batch_filtered = batch_frame.loc[
+            batch_frame[membership_column].isin(allowed_values)
+        ].copy()
+        if not batch_filtered.empty:
+            filtered_batches.append(batch_filtered)
+
+    if not filtered_batches:
+        requested_columns = columns or parquet_file.schema.names
+        return pd.DataFrame(columns=requested_columns)
+    return pd.concat(filtered_batches, ignore_index=True, sort=False)
+
+
+def _validate_state_build_medication_event_input(dataframe: pd.DataFrame) -> None:
+    missing_columns = sorted(
+        set(STATE_BUILD_MEDICATION_EVENT_COLUMNS) - set(dataframe.columns)
+    )
+    if missing_columns:
+        raise DataLoadError(
+            "State-build medication-event input is missing required columns: "
+            + ", ".join(missing_columns)
+        )
+
+
+def _encounter_ids_with_medication_review_evidence(
+    medication_events: pd.DataFrame,
+) -> set[str]:
+    if medication_events.empty:
+        return set()
+
+    encounter_ids: set[str] = set()
+    if "encounter_id" not in medication_events:
+        return encounter_ids
+
+    administration_mask = medication_events["medication_event_type"].isin(
+        ["hospital_admin", "ed_pyxis"]
+    )
+    if administration_mask.any():
+        valid_administration_mask = administration_mask & pd.to_datetime(
+            medication_events["event_time"],
+            errors="coerce",
+            format=TIMESTAMP_FORMAT,
+        ).notna()
+        encounter_ids.update(
+            medication_events.loc[
+                valid_administration_mask,
+                "encounter_id",
+            ].astype(str)
+        )
+
+    order_mask = medication_events["medication_event_type"] == "hospital_order"
+    if order_mask.any():
+        valid_order_mask = pd.Series(False, index=medication_events.index)
+        for column in ["stoptime", "starttime", "event_time"]:
+            if column not in medication_events:
+                continue
+            valid_order_mask = valid_order_mask | (
+                order_mask
+                & pd.to_datetime(
+                    medication_events[column],
+                    errors="coerce",
+                    format=TIMESTAMP_FORMAT,
+                ).notna()
+            )
+        encounter_ids.update(
+            medication_events.loc[valid_order_mask, "encounter_id"].astype(str)
+        )
+
+    return encounter_ids
+
+
+def _medication_candidate_keys(events: pd.DataFrame) -> pd.Series:
+    standardized = _normalized_text_series(events.get("medication_standardized"), index=events.index)
+    normalized = _normalized_text_series(events.get("medication_normalized"), index=events.index)
+    return standardized.where(standardized.notna(), normalized).astype("object")
+
+
+def _latest_lab_timestamp_by_hadm_id(
+    labevents: pd.DataFrame | None,
+) -> dict[int, pd.Timestamp]:
+    if labevents is None or labevents.empty or "hadm_id" not in labevents:
+        return {}
+    labs = labevents.loc[:, ["hadm_id", "charttime"]].copy()
+    labs["hadm_id"] = pd.to_numeric(labs["hadm_id"], errors="coerce")
+    labs["charttime"] = pd.to_datetime(labs["charttime"], errors="coerce", format=TIMESTAMP_FORMAT)
+    labs = labs.dropna(subset=["hadm_id", "charttime"])
+    if labs.empty:
+        return {}
+    latest = (
+        labs.sort_values(["hadm_id", "charttime"], na_position="last")
+        .drop_duplicates(subset=["hadm_id"], keep="last")
+    )
+    return {
+        int(row.hadm_id): row.charttime
+        for row in latest.itertuples(index=False)
+    }
+
+
+def _latest_vitals_timestamp_by_subject_stay(
+    *,
+    triage: pd.DataFrame | None,
+    vitalsign: pd.DataFrame | None,
+) -> dict[tuple[int, int], pd.Timestamp]:
+    frames: list[pd.DataFrame] = []
+    if triage is not None and not triage.empty:
+        triage_time_column = "intime" if "intime" in triage.columns else "charttime"
+        if triage_time_column in triage.columns:
+            triage_frame = triage.loc[:, ["subject_id", "stay_id", triage_time_column]].copy()
+            triage_frame = triage_frame.rename(columns={triage_time_column: "charttime"})
+            frames.append(triage_frame)
+    if vitalsign is not None and not vitalsign.empty and "charttime" in vitalsign:
+        frames.append(vitalsign.loc[:, ["subject_id", "stay_id", "charttime"]].copy())
+    if not frames:
+        return {}
+    vitals = pd.concat(frames, ignore_index=True, sort=False)
+    vitals["subject_id"] = pd.to_numeric(vitals["subject_id"], errors="coerce")
+    vitals["stay_id"] = pd.to_numeric(vitals["stay_id"], errors="coerce")
+    vitals["charttime"] = pd.to_datetime(vitals["charttime"], errors="coerce", format=TIMESTAMP_FORMAT)
+    vitals = vitals.dropna(subset=["subject_id", "stay_id", "charttime"])
+    if vitals.empty:
+        return {}
+    latest = (
+        vitals.sort_values(["subject_id", "stay_id", "charttime"], na_position="last")
+        .drop_duplicates(subset=["subject_id", "stay_id"], keep="last")
+    )
+    return {
+        (int(row.subject_id), int(row.stay_id)): row.charttime
+        for row in latest.itertuples(index=False)
+    }
+
+
 def _encounter_medication_state_rows_for_encounter(
     *,
     encounter: dict[str, object],
@@ -551,6 +1284,8 @@ def _encounter_medication_state_rows_for_encounter(
                 ),
                 "review_timestamp": _format_timestamp(review_timestamp),
                 "review_timestamp_source": review_resolution.review_timestamp_source,
+                "age_proxy": _float_or_none(encounter.get("age_proxy")),
+                "age_group": encounter.get("age_group"),
                 "review_time_policy_name": review_resolution.review_time_policy_name,
                 "review_timestamp_candidate": _format_timestamp(
                     review_resolution.review_timestamp_candidate
@@ -917,6 +1652,95 @@ def _medication_candidate_key(row: pd.Series) -> str | None:
     return None
 
 
+def _normalized_text_series(
+    series: pd.Series | None,
+    *,
+    index: pd.Index,
+) -> pd.Series:
+    if series is None:
+        return pd.Series(pd.NA, index=index, dtype="string")
+    return series.astype("string").str.strip().replace("", pd.NA)
+
+
+def _review_group_key(
+    encounter_id: object,
+    medication_standardized_key: object,
+) -> tuple[str, str]:
+    return str(encounter_id), str(medication_standardized_key)
+
+
+def _state_int_series(
+    series: pd.Series | None,
+    *,
+    index: pd.Index,
+) -> pd.Series:
+    if series is None:
+        return pd.Series(0, index=index, dtype="int64")
+    return pd.to_numeric(series, errors="coerce").fillna(0).astype(int)
+
+
+def _encounter_state_event_start_series(group: pd.DataFrame) -> pd.Series:
+    start_columns: list[pd.Series] = []
+    for column in ["starttime", "event_time", "encounter_start"]:
+        if column in group:
+            start_columns.append(
+                pd.to_datetime(
+                    group[column],
+                    errors="coerce",
+                    format=TIMESTAMP_FORMAT,
+                )
+            )
+        else:
+            start_columns.append(pd.Series(pd.NaT, index=group.index))
+    return pd.concat(start_columns, axis=1).bfill(axis=1).iloc[:, 0]
+
+
+def _encounter_state_priority_rank_series(group: pd.DataFrame) -> pd.Series:
+    ranks = pd.Series(0, index=group.index, dtype="int64")
+    ranks = ranks.mask(
+        _state_int_series(group.get("source_ed_pyxis"), index=group.index) == 1,
+        1,
+    )
+    ranks = ranks.mask(
+        _state_int_series(group.get("source_hospital_admin"), index=group.index) == 1,
+        2,
+    )
+    ranks = ranks.mask(
+        _state_int_series(group.get("source_home_medrecon"), index=group.index) == 1,
+        3,
+    )
+    ranks = ranks.mask(
+        _state_int_series(group.get("source_hospital_order"), index=group.index) == 1,
+        4,
+    )
+    return ranks
+
+
+def _active_event_mask_for_review_rows(group: pd.DataFrame) -> pd.Series:
+    event_types = group["medication_event_type"].astype("string")
+    review_times = group["review_timestamp"]
+    start_times = group["_event_start"]
+    stop_times = group["_event_stop"]
+    interval_active = (
+        review_times.notna()
+        & start_times.notna()
+        & (start_times <= review_times)
+        & (stop_times.isna() | (stop_times >= review_times))
+    )
+    point_event_mask = event_types.isin(["ed_pyxis", "hospital_admin"])
+    point_active = review_times.notna() & start_times.notna() & (start_times == review_times)
+    home_event_mask = event_types == "home_medrecon"
+    continued_home = _state_int_series(
+        group.get("continued_from_home_inferred"),
+        index=group.index,
+    ) == 1
+    return (
+        (point_event_mask & point_active)
+        | (home_event_mask & continued_home & interval_active)
+        | (~point_event_mask & ~home_event_mask & interval_active)
+    )
+
+
 def _format_timestamp(value: object) -> str | None:
     timestamp = pd.to_datetime(value, errors="coerce")
     if pd.isna(timestamp):
@@ -946,6 +1770,13 @@ def _int_or_none(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _float_or_none(value: object) -> float | None:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return None
+    return float(numeric)
 
 
 def _binary_as_bool(value: object) -> bool:
@@ -995,3 +1826,18 @@ def _class_labels_for_group(group: pd.DataFrame) -> set[str]:
             if text:
                 labels.add(text)
     return labels
+
+
+def _identifier_set(series: pd.Series | None) -> set[int]:
+    if series is None:
+        return set()
+    return {
+        int(value)
+        for value in pd.to_numeric(series, errors="coerce").dropna().astype(int).tolist()
+    }
+
+
+def _load_required_parquet(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Expected analytical artifact at '{path}', but it does not exist.")
+    return pd.read_parquet(path)

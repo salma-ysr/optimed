@@ -17,6 +17,13 @@ from opti_med.labels.contracts import (
     PrimaryActionLabelCategory,
     PrimaryActionLabelRow,
 )
+from opti_med.labels.first_scope import (
+    build_first_scope_label_qc_report,
+    build_first_scope_labels,
+    calculate_first_scope_label_qc_metrics,
+    summarize_first_scope_labels,
+    write_first_scope_label_qc_report,
+)
 
 __all__ = [
     "ANALYTICAL_LABEL_GRAIN_DESCRIPTION",
@@ -34,4 +41,9 @@ __all__ = [
     "LabelWindowMetadata",
     "PrimaryActionLabelCategory",
     "PrimaryActionLabelRow",
+    "build_first_scope_labels",
+    "calculate_first_scope_label_qc_metrics",
+    "build_first_scope_label_qc_report",
+    "write_first_scope_label_qc_report",
+    "summarize_first_scope_labels",
 ]

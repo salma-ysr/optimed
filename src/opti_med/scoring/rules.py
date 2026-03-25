@@ -7,6 +7,8 @@ from typing import Callable
 
 import pandas as pd
 
+from opti_med.scoring.priority_levels import score_to_priority_level
+
 
 ScorePredicate = Callable[[pd.Series], bool]
 EvidenceBuilder = Callable[[pd.Series], dict[str, object]]
@@ -277,11 +279,10 @@ def _outside_range(
 
 def score_to_label(score: int) -> str:
     """Map the normalized 0-to-10 score to a simple severity label."""
-    if score >= 7:
-        return "high"
-    if score >= 4:
-        return "medium"
-    return "low"
+    level = score_to_priority_level(score)
+    if level is None:
+        raise ValueError("score_to_label requires a non-null canonical 0-to-10 score.")
+    return level
 
 
 def score_to_summary_alert(score: int, hits: list[RuleHit], bucket_scores: dict[str, int]) -> str:

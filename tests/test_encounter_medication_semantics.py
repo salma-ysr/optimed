@@ -9,6 +9,7 @@ import pandas as pd
 
 from opti_med.config import Settings
 from opti_med.data_access.artifact_schemas import (
+    ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION,
     ENCOUNTER_INDEX_COLUMNS,
     ENCOUNTER_INDEX_CONTRACT_VERSION,
     MEDICATION_EVENT_COLUMNS,
@@ -17,12 +18,14 @@ from opti_med.data_access.artifact_schemas import (
     MEDICATION_RXNORM_MAPPING_CONTRACT_VERSION,
 )
 from opti_med.data_access.encounter_medication_semantics import (
+    build_encounter_medication_first_scope,
     build_encounter_medication_burden,
     build_encounter_medication_semantics,
     calculate_first_scope_qc_metrics,
     summarize_first_scope_artifacts,
 )
 from opti_med.data_access.encounter_medication_state import build_encounter_medication_state
+from opti_med.pipeline.qc import build_first_scope_semantics_and_burden_qc_report
 
 
 class EncounterMedicationSemanticsTests(unittest.TestCase):
@@ -52,6 +55,8 @@ class EncounterMedicationSemanticsTests(unittest.TestCase):
         self.assertEqual(classes["Oxycodone"], "opioid")
         self.assertEqual(classes["Quetiapine"], "antipsychotic")
         self.assertEqual(classes["Furosemide"], "unresolved")
+        self.assertEqual(float(semantics.iloc[0]["age_proxy"]), 77.0)
+        self.assertEqual(semantics.iloc[0]["age_group"], "75-84")
         self.assertEqual(
             semantics.loc[
                 semantics["medication_standardized"] == "Furosemide",
@@ -65,6 +70,15 @@ class EncounterMedicationSemanticsTests(unittest.TestCase):
                 "benzodiazepine_heuristic_flag",
             ].item(),
             1,
+        )
+        lorazepam = semantics.loc[semantics["medication_standardized"] == "Lorazepam"].iloc[0]
+        self.assertEqual(lorazepam["medication_standardized_source"], "rxnorm_ingredient")
+        self.assertEqual(lorazepam["rxnorm_term_type"], "IN")
+        self.assertEqual(int(lorazepam["ambiguous_mapping_flag"]), 0)
+        self.assertEqual(int(lorazepam["mapping_candidate_count"]), 1)
+        self.assertEqual(
+            lorazepam["medication_mapping_lookup_strategy"],
+            "cached_prior_result",
         )
 
     def test_burden_features_capture_current_counts_duplicates_schedule_duration_and_placeholders(
@@ -122,6 +136,8 @@ class EncounterMedicationSemanticsTests(unittest.TestCase):
         self.assertEqual(int(furosemide["same_class_duplicate_therapy_flag"]), 0)
         self.assertEqual(lorazepam["medication_start_context"], "continued_from_home")
         self.assertEqual(diazepam["medication_start_context"], "new_start_during_encounter")
+        self.assertEqual(float(lorazepam["age_proxy"]), 77.0)
+        self.assertEqual(lorazepam["age_group"], "75-84")
         self.assertEqual(lorazepam["scheduled_vs_prn"], "prn")
         self.assertEqual(pantoprazole["scheduled_vs_prn"], "scheduled")
         self.assertEqual(int(lorazepam["duration_before_review_inferable_flag"]), 1)
@@ -156,6 +172,92 @@ class EncounterMedicationSemanticsTests(unittest.TestCase):
         self.assertTrue(any("unresolved_class_rate=" in line for line in summary_lines))
         self.assertTrue(any("heuristic_comparison benzodiazepine" in line for line in summary_lines))
         self.assertTrue(any("exact_duplicate_therapy_signals=" in line for line in summary_lines))
+
+    def test_first_scope_artifact_filters_supported_classes_and_merges_burden_context(self) -> None:
+        encounter_index = _encounter_index_artifact()
+        medication_events = _medication_events_artifact()
+        medication_rxnorm_mapping = _medication_rxnorm_mapping_artifact()
+
+        state = build_encounter_medication_state(
+            encounter_index=encounter_index,
+            medication_events=medication_events,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+            review_time_policy="discharge_capped_latest_available",
+        )
+        semantics = build_encounter_medication_semantics(
+            encounter_medication_state=state,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+        )
+        burden = build_encounter_medication_burden(
+            encounter_medication_semantics=semantics,
+            medication_events=medication_events,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+            encounter_index=encounter_index,
+            labevents=None,
+            settings=Settings(),
+        )
+        first_scope = build_encounter_medication_first_scope(
+            encounter_medication_semantics=semantics,
+            encounter_medication_burden=burden,
+        )
+
+        self.assertEqual(
+            set(first_scope["medication_standardized"].tolist()),
+            {"Lorazepam", "Diazepam", "Pantoprazole", "Oxycodone", "Quetiapine"},
+        )
+        self.assertEqual(
+            set(first_scope["medication_class_standardized"].tolist()),
+            {"benzodiazepine", "opioid", "ppi", "antipsychotic"},
+        )
+        lorazepam = first_scope.loc[first_scope["medication_standardized"] == "Lorazepam"].iloc[0]
+        self.assertEqual(lorazepam["ingredient_standardized"], "Lorazepam")
+        self.assertEqual(lorazepam["medication_standardized_source"], "rxnorm_ingredient")
+        self.assertEqual(int(lorazepam["same_class_duplicate_therapy_flag"]), 1)
+        self.assertEqual(int(lorazepam["exact_current_medication_count"]), 5)
+        self.assertEqual(
+            first_scope["encounter_medication_first_scope_contract_version"].iloc[0],
+            ENCOUNTER_MEDICATION_FIRST_SCOPE_CONTRACT_VERSION,
+        )
+
+    def test_first_scope_qc_report_includes_subset_counts_by_class(self) -> None:
+        encounter_index = _encounter_index_artifact()
+        medication_events = _medication_events_artifact()
+        medication_rxnorm_mapping = _medication_rxnorm_mapping_artifact()
+
+        state = build_encounter_medication_state(
+            encounter_index=encounter_index,
+            medication_events=medication_events,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+            review_time_policy="discharge_capped_latest_available",
+        )
+        semantics = build_encounter_medication_semantics(
+            encounter_medication_state=state,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+        )
+        burden = build_encounter_medication_burden(
+            encounter_medication_semantics=semantics,
+            medication_events=medication_events,
+            medication_rxnorm_mapping=medication_rxnorm_mapping,
+            encounter_index=encounter_index,
+            labevents=None,
+            settings=Settings(),
+        )
+        first_scope = build_encounter_medication_first_scope(
+            encounter_medication_semantics=semantics,
+            encounter_medication_burden=burden,
+        )
+
+        report = build_first_scope_semantics_and_burden_qc_report(
+            encounter_medication_semantics=semantics,
+            encounter_medication_burden=burden,
+            encounter_medication_first_scope=first_scope,
+        )
+
+        self.assertIn("# First-Scope Semantics And Burden 65plus QC", report)
+        self.assertIn("## Class Coverage", report)
+        self.assertIn("## First-Scope Rows By Class", report)
+        self.assertIn("- benzodiazepine: 2", report)
+        self.assertIn("- opioid: 1", report)
 
 
 def _encounter_index_artifact() -> pd.DataFrame:
@@ -457,6 +559,8 @@ def _mapping_row(
     class_labels = [] if supported_class_label is None else [supported_class_label]
     row = {
         "medication_query_key": medication_query_key,
+        "medication_raw": ingredient_standardized,
+        "medication_normalized": medication_query_key,
         "raw_medication_string": ingredient_standardized,
         "normalized_query_string": medication_query_key,
         "lookup_mode": "cache_first",
@@ -475,6 +579,7 @@ def _mapping_row(
         "candidate_match_count": 1,
         "candidate_rxcuis_json": dumps_json([f"rxcui-{medication_query_key}"]),
         "ambiguity_note": None,
+        "unresolved_reason": None,
         "class_assignment_status": (
             "supported_scope_class_assigned"
             if supported_class_label is not None
