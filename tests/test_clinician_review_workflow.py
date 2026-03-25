@@ -1,4 +1,4 @@
-"""Focused tests for the Phase 5 clinician review workflow artifacts."""
+"""Focused tests for the clinician review workflow and Phase 6 densification artifacts."""
 
 from __future__ import annotations
 
@@ -23,6 +23,12 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
             analytical_root=self.root / "data" / "analytical",
             modeling_root=self.root / "data" / "modeling",
             label_root=self.root / "data" / "labels",
+            clinician_review_qc_report_output_path=self.root
+            / "docs"
+            / "phase5_clinician_review_qc.md",
+            clinician_review_phase6_qc_report_output_path=self.root
+            / "docs"
+            / "phase6_clinician_review_qc.md",
             default_clinician_reviewer_id="unit_test_pharmacist",
         )
         self.settings.analytical_root.mkdir(parents=True, exist_ok=True)
@@ -56,8 +62,10 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(saved_review["modeling__row_id"], self._expected_row_id("olanzapine"))
         self.assertEqual(first_report["clinician_reviewed_row_count"], 1)
         self.assertEqual(first_report["numeric_score_populated_count"], 1)
-        self.assertIn("label collection milestone", first_report["phase_scope_statement"])
+        self.assertIn("label densification milestone", first_report["phase_scope_statement"])
         self.assertEqual(first_report["priority_level_frequencies"]["high"], 1)
+        self.assertEqual(first_report["remaining_unreviewed_row_count"], 1)
+        self.assertAlmostEqual(first_report["clinician_review_coverage_rate"], 0.5, places=6)
 
         latest_snapshot = repository.load_latest_reviews()
         self.assertEqual(len(latest_snapshot), 1)
@@ -92,6 +100,10 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
             second_report["traceability_validation"]["reviewable_duplicate_key_count"],
             0,
         )
+        self.assertIn(
+            "milestone_1_label_volume",
+            second_report["milestone_status"],
+        )
 
         events = repository.load_review_events()
         self.assertEqual(len(events), 2)
@@ -106,6 +118,10 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
         self.assertTrue(self.settings.clinician_review_snapshot_output_path.exists())
         self.assertTrue(self.settings.clinician_review_qc_summary_path.exists())
         self.assertTrue(self.settings.clinician_review_qc_report_path.exists())
+        self.assertTrue(self.settings.clinician_review_phase6_universe_output_path.exists())
+        self.assertTrue(self.settings.clinician_review_phase6_queue_output_path.exists())
+        self.assertTrue(self.settings.clinician_review_phase6_qc_summary_path.exists())
+        self.assertTrue(self.settings.clinician_review_phase6_qc_report_path.exists())
 
     def test_resolve_reviewable_row_and_queue_hints_use_analytical_grain(self) -> None:
         repository = ClinicianReviewRepository(self.settings)
@@ -139,6 +155,65 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(disagreement_priority, "disagreement_candidate")
         self.assertIn("clinician_rule_disagreement", disagreement_reasons)
+
+    def test_phase6_queue_prioritizes_unreviewed_rows_and_supports_filters(self) -> None:
+        repository = ClinicianReviewRepository(self.settings)
+        repository.save_review(
+            submission={
+                "subject_id": 1001,
+                "encounter_id": "hadm:2001",
+                "medication_standardized": "olanzapine",
+                "review_timestamp": "2125-03-20 10:00:00",
+                "label__clinician_priority_level": "high",
+                "label__clinician_review_status": "reviewed",
+                "label__clinician_reason_tags": ["polypharmacy"],
+                "review_submission_source": "review_queue_ui_phase6",
+            }
+        )
+
+        queue = repository.load_review_queue()
+        self.assertEqual(len(queue), 2)
+        self.assertEqual(queue.iloc[0]["medication_standardized"], "omeprazole")
+        self.assertEqual(int(queue.iloc[0]["current_clinician_reviewed_flag"]), 0)
+        self.assertEqual(queue.iloc[0]["queue_rank"], 1)
+        self.assertIn("unreviewed_row", queue.iloc[0]["queue_priority_reasons"])
+        self.assertIn("supported_first_scope_class", queue.iloc[0]["queue_priority_reasons"])
+        self.assertEqual(queue.iloc[1]["medication_standardized"], "olanzapine")
+        self.assertEqual(int(queue.iloc[1]["current_clinician_reviewed_flag"]), 1)
+
+        unreviewed_only = repository.filter_review_queue(queue, unreviewed_only=True)
+        self.assertEqual(len(unreviewed_only), 1)
+        self.assertEqual(unreviewed_only.iloc[0]["medication_standardized"], "omeprazole")
+
+        with_reason_tags = repository.filter_review_queue(
+            queue,
+            reason_tag_presence="has_reason_tags",
+        )
+        self.assertEqual(len(with_reason_tags), 1)
+        self.assertEqual(with_reason_tags.iloc[0]["medication_standardized"], "olanzapine")
+
+        filtered_class = repository.filter_review_queue(queue, medication_class="ppi")
+        self.assertEqual(len(filtered_class), 1)
+        self.assertEqual(filtered_class.iloc[0]["medication_standardized"], "omeprazole")
+
+    def test_save_review_accepts_required_fields_only(self) -> None:
+        repository = ClinicianReviewRepository(self.settings)
+
+        saved_review, report = repository.save_review(
+            submission={
+                "subject_id": 1002,
+                "encounter_id": "hadm:2002",
+                "medication_standardized": "omeprazole",
+                "review_timestamp": "2125-03-21 11:00:00",
+                "label__clinician_priority_level": "low",
+                "label__clinician_review_status": "reviewed",
+            }
+        )
+
+        self.assertEqual(saved_review["label__clinician_priority_level"], "low")
+        self.assertIsNone(saved_review["label__clinician_priority_score"])
+        self.assertEqual(saved_review["label__clinician_reason_tags"], [])
+        self.assertEqual(report["clinician_reviewed_row_count"], 1)
 
     def test_save_review_rejects_modeling_row_id_mismatch(self) -> None:
         repository = ClinicianReviewRepository(self.settings)

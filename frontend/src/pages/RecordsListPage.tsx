@@ -189,6 +189,11 @@ export function RecordsListPage() {
             Priorisez les dossiers patients à revoir, repérez les signaux dominants et
             ouvrez chaque dossier clinique sans centrer l’interface sur l’admission.
           </p>
+          <div className="medication-list-controls">
+            <Link to="/review-queue" className="list-control-button hero-link-button">
+              Ouvrir la file de revue Phase 6
+            </Link>
+          </div>
         </div>
       </section>
 

@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/uitext.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/pages/recorddetailspage.tsx","./src/pages/recordslistpage.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/uitext.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/pages/recorddetailspage.tsx","./src/pages/recordslistpage.tsx","./src/pages/reviewqueuepage.tsx"],"version":"5.9.3"}

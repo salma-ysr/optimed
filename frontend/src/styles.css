@@ -900,6 +900,127 @@ button {
   white-space: normal;
 }
 
+.hero-link-button {
+  text-decoration: none;
+}
+
+.queue-filters-panel {
+  margin-top: 18px;
+}
+
+.queue-filter-row {
+  align-items: end;
+}
+
+.queue-filter-toggle {
+  min-height: 42px;
+}
+
+.queue-progress-card {
+  margin-top: 20px;
+}
+
+.queue-progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.queue-coverage-grid,
+.queue-milestone-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.queue-coverage-item,
+.queue-milestone-item {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(18, 57, 85, 0.1);
+}
+
+.queue-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+  gap: 18px;
+  margin-top: 20px;
+  align-items: start;
+}
+
+.queue-active-card,
+.queue-sidebar {
+  min-width: 0;
+}
+
+.queue-active-header,
+.queue-row-summary,
+.queue-navigation {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.queue-navigation {
+  margin-top: 16px;
+}
+
+.queue-open-dossier {
+  text-decoration: none;
+}
+
+.queue-row-summary {
+  margin-top: 18px;
+}
+
+.queue-row-title {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.1;
+  font-weight: 800;
+  color: #163046;
+}
+
+.queue-quick-save-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.queue-sidebar-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.queue-sidebar-item {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(18, 57, 85, 0.1);
+  background: rgba(255, 255, 255, 0.86);
+  color: #23475f;
+  cursor: pointer;
+}
+
+.queue-sidebar-item-active {
+  background: linear-gradient(135deg, #edf6f1, #eef4f7);
+  border-color: rgba(13, 107, 95, 0.2);
+}
+
 @media (max-width: 900px) {
   .summary-grid,
   .records-grid,
@@ -942,9 +1063,23 @@ button {
     justify-items: start;
   }
 
+  .queue-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-sidebar-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
   .review-form-grid,
   .review-form-actions,
-  .review-panel-header {
+  .review-panel-header,
+  .queue-active-header,
+  .queue-row-summary,
+  .queue-navigation,
+  .queue-progress-header {
     grid-template-columns: 1fr;
     flex-direction: column;
     align-items: stretch;

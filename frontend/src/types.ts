@@ -45,15 +45,35 @@ export interface ClinicianReviewWorkflowReport {
   generated_at: string;
   phase_scope_statement: string;
   artifact_paths: Record<string, string>;
+  queue_generation_logic: string[];
   reviewable_row_count: number;
   clinician_reviewed_row_count: number;
+  remaining_unreviewed_row_count: number;
+  clinician_review_coverage_rate: number;
+  unlabeled_reviewable_rate: number;
   required_level_populated_count: number;
   numeric_score_populated_count: number;
   reason_tag_row_coverage_count: number;
+  reviewable_distinct_subject_count: number;
+  reviewable_distinct_encounter_count: number;
+  clinician_reviewed_distinct_subject_count: number;
+  clinician_reviewed_distinct_encounter_count: number;
+  clinician_reviewed_medication_class_count: number;
+  reviewable_rows_with_modeling_row_id_count: number;
+  reviewable_rows_with_modeling_row_id_rate: number;
+  benchmark_available_reviewable_row_count: number;
+  benchmark_available_reviewable_row_rate: number;
   priority_level_frequencies: Record<string, number>;
   reason_tag_frequencies: Record<string, number>;
   review_status_frequencies: Record<string, number>;
+  reviewable_rows_by_medication_class: Record<string, number>;
+  clinician_reviewed_rows_by_medication_class: Record<string, number>;
+  clinician_reviewed_rows_by_patient: Record<string, number>;
+  queue_priority_reason_frequencies: Record<string, number>;
+  label_balance_assessment: Record<string, unknown>;
+  milestone_status: Record<string, Record<string, unknown>>;
   traceability_validation: Record<string, number>;
+  top_queue_preview: Array<Record<string, unknown>>;
 }
 
 export interface ClinicianReviewSubmissionRequest {
@@ -65,6 +85,7 @@ export interface ClinicianReviewSubmissionRequest {
   review_timestamp: string;
   modeling__row_id?: string | null;
   reviewer_id?: string | null;
+  review_submission_source?: string | null;
   label__clinician_priority_level: RiskLabel;
   label__clinician_priority_score?: number | null;
   label__clinician_review_status: ClinicianReviewStatus;
@@ -76,6 +97,54 @@ export interface ClinicianReviewSubmissionRequest {
 export interface ClinicianReviewSubmissionResponse {
   review: ClinicianReviewRecord;
   workflow_report: ClinicianReviewWorkflowReport;
+}
+
+export interface ClinicianReviewQueueEntry {
+  subject_id: number;
+  encounter_id: string;
+  hadm_id?: number | null;
+  stay_id?: number | null;
+  review_timestamp: string;
+  medication_standardized: string;
+  medication_normalized?: string | null;
+  medication_class_standardized?: string | null;
+  first_scope_supported_class_flag?: number | null;
+  medication_status_at_review?: string | null;
+  active_at_review_flag?: number | null;
+  dose_value?: string | null;
+  dose_unit?: string | null;
+  route?: string | null;
+  frequency?: string | null;
+  modeling__row_id?: string | null;
+  benchmark__current_rule_score?: number | null;
+  benchmark__current_rule_score_level?: RiskLabel | null;
+  benchmark__current_rule_available_flag?: number | null;
+  label__primary_action_label?: string | null;
+  label__unknown_or_insufficient_evidence_flag?: number | null;
+  meta__dataset_row_eligible_for_training_flag?: number | null;
+  reviewable_flag: boolean;
+  current_clinician_reviewed_flag: number;
+  queue_rank: number;
+  queue_priority_score: number;
+  queue_priority_band: string;
+  queue_priority_reasons: string[];
+  needs_review_justification: string;
+  class_reviewed_count: number;
+  class_reviewable_count: number;
+  subject_reviewed_count: number;
+  subject_reviewable_count: number;
+  encounter_reviewed_count: number;
+  encounter_reviewable_count: number;
+  clinician_review?: ClinicianReviewRecord | null;
+}
+
+export interface ClinicianReviewQueueResponse {
+  generated_at: string;
+  total_queue_rows: number;
+  filtered_queue_rows: number;
+  filters_applied: Record<string, unknown>;
+  workflow_report: ClinicianReviewWorkflowReport;
+  rows: ClinicianReviewQueueEntry[];
 }
 
 export interface ScoredRow {

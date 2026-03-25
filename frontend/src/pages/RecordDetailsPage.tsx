@@ -420,7 +420,7 @@ function queueReasonLabel(reason: string) {
     constructed_label_ambiguous: "Label construit ambigu",
     rule_signal_present: "Signal règle présent",
     clinician_rule_disagreement: "Clinicien vs règle",
-    not_in_phase5_review_scope: "Non aligné au grain Phase 5",
+    not_in_phase5_review_scope: "Non aligné au grain analytique",
   };
   return labels[reason] ?? reason;
 }
@@ -530,8 +530,7 @@ function PharmacistReviewPanel({
     );
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function saveReview(level: RiskLabel) {
     if (!medication.reviewable_flag || !medication.medication_standardized || !medication.review_timestamp) {
       return;
     }
@@ -545,7 +544,8 @@ function PharmacistReviewPanel({
       review_timestamp: medication.review_timestamp,
       modeling__row_id: medication.modeling__row_id ?? null,
       reviewer_id: reviewerId.trim() || "pharmacist_demo_local",
-      label__clinician_priority_level: priorityLevel,
+      review_submission_source: "dossier_ui_phase6",
+      label__clinician_priority_level: level,
       label__clinician_priority_score: priorityScore.trim() ? Number(priorityScore) : null,
       label__clinician_review_status: reviewStatus,
       label__clinician_reason_tags: reasonTags,
@@ -570,15 +570,20 @@ function PharmacistReviewPanel({
     }
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await saveReview(priorityLevel);
+  }
+
   if (!medication.reviewable_flag || !medication.medication_standardized || !medication.review_timestamp) {
     return (
       <section className="review-panel review-panel-muted">
         <div className="review-panel-header">
-          <strong>Revue clinicienne Phase 5</strong>
+          <strong>Revue clinicienne Phase 6</strong>
           <span className="chip chip-neutral">Non revuable</span>
         </div>
         <p className="details-section-copy">
-          Cette ligne ne se rattache pas de façon suffisamment propre au grain analytique Phase 5
+          Cette ligne ne se rattache pas de façon suffisamment propre au grain analytique de revue
           pour créer un label clinicien traçable en aval.
         </p>
       </section>
@@ -589,7 +594,7 @@ function PharmacistReviewPanel({
     <section className="review-panel">
       <div className="review-panel-header">
         <div>
-          <strong>Revue clinicienne Phase 5</strong>
+          <strong>Revue clinicienne Phase 6</strong>
           <p className="review-panel-subtitle">
             Grain: {medication.subject_id} • {medication.encounter_id} • {medication.medication_standardized}
           </p>
@@ -753,6 +758,23 @@ function PharmacistReviewPanel({
 
         {saveError ? <p className="review-feedback review-feedback-error">{saveError}</p> : null}
         {saveMessage ? <p className="review-feedback review-feedback-success">{saveMessage}</p> : null}
+
+        <div className="queue-quick-save-row">
+          {(["low", "medium", "high"] as RiskLabel[]).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="primary-button"
+              disabled={isSaving}
+              onClick={() => {
+                setPriorityLevel(option);
+                void saveReview(option);
+              }}
+            >
+              {isSaving ? "Enregistrement..." : `Sauver ${translateRiskLabel(option)}`}
+            </button>
+          ))}
+        </div>
 
         <div className="review-form-actions">
           <button type="submit" className="primary-button" disabled={isSaving}>

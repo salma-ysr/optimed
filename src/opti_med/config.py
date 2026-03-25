@@ -33,6 +33,9 @@ DEFAULT_FIRST_SCOPE_DATASET_QC_REPORT_PATH = Path(
 DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH = Path(
     "docs/ml_pivot/18_phase5_clinician_review_workflow_qc.md"
 )
+DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/19_phase6_clinician_review_densification_qc.md"
+)
 DEFAULT_INGESTION_BEHAVIOR = "incremental"
 DEFAULT_INGESTION_CHUNK_SIZE = 100_000
 DEFAULT_SERUM_CREATININE_ITEMIDS = (50912, 51081, 51977, 52546)
@@ -64,6 +67,10 @@ class Settings:
     manifest_root: Path = DEFAULT_MANIFEST_ROOT
     standardized_file_extension: str = DEFAULT_STANDARDIZED_FILE_EXTENSION
     encounter_medication_qc_report_path: Path = DEFAULT_ENCOUNTER_QC_REPORT_PATH
+    clinician_review_qc_report_output_path: Path = DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH
+    clinician_review_phase6_qc_report_output_path: Path = (
+        DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH
+    )
     ingestion_behavior: str = DEFAULT_INGESTION_BEHAVIOR
     ingestion_chunk_size: int = DEFAULT_INGESTION_CHUNK_SIZE
     older_adult_age_threshold: int = 65
@@ -229,7 +236,27 @@ class Settings:
     @property
     def clinician_review_qc_report_path(self) -> Path:
         """Return the markdown QC report path for the Phase 5 workflow."""
-        return DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH
+        return self.clinician_review_qc_report_output_path
+
+    @property
+    def clinician_review_phase6_queue_output_path(self) -> Path:
+        """Return the Phase 6 deterministic review queue artifact path."""
+        return self.label_root / "clinician_review_queue_v1_phase6.parquet"
+
+    @property
+    def clinician_review_phase6_universe_output_path(self) -> Path:
+        """Return the Phase 6 reviewable-universe artifact path."""
+        return self.label_root / "clinician_review_universe_v1_phase6.parquet"
+
+    @property
+    def clinician_review_phase6_qc_summary_path(self) -> Path:
+        """Return the machine-readable Phase 6 densification QC summary path."""
+        return self.label_root / "clinician_review_densification_qc_v1_phase6.json"
+
+    @property
+    def clinician_review_phase6_qc_report_path(self) -> Path:
+        """Return the markdown QC report path for the Phase 6 densification workflow."""
+        return self.clinician_review_phase6_qc_report_output_path
 
     @property
     def encounter_index_output_path(self) -> Path:
@@ -301,6 +328,18 @@ class Settings:
                 str(DEFAULT_ENCOUNTER_QC_REPORT_PATH),
             )
         )
+        clinician_review_qc_report_output_path = Path(
+            os.getenv(
+                "OPTI_MED_CLINICIAN_REVIEW_QC_REPORT_PATH",
+                str(DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH),
+            )
+        )
+        clinician_review_phase6_qc_report_output_path = Path(
+            os.getenv(
+                "OPTI_MED_CLINICIAN_REVIEW_PHASE6_QC_REPORT_PATH",
+                str(DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH),
+            )
+        )
         ingestion_behavior = os.getenv(
             "OPTI_MED_INGESTION_BEHAVIOR",
             DEFAULT_INGESTION_BEHAVIOR,
@@ -355,6 +394,10 @@ class Settings:
             manifest_root=manifest_root,
             standardized_file_extension=standardized_file_extension,
             encounter_medication_qc_report_path=encounter_medication_qc_report_path,
+            clinician_review_qc_report_output_path=clinician_review_qc_report_output_path,
+            clinician_review_phase6_qc_report_output_path=(
+                clinician_review_phase6_qc_report_output_path
+            ),
             ingestion_behavior=ingestion_behavior,
             ingestion_chunk_size=ingestion_chunk_size,
             older_adult_age_threshold=older_adult_age_threshold,

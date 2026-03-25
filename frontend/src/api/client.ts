@@ -1,4 +1,5 @@
 import type {
+  ClinicianReviewQueueResponse,
   AdmissionSummariesResponse,
   ClinicianReviewSubmissionRequest,
   ClinicianReviewSubmissionResponse,
@@ -75,4 +76,34 @@ export function submitClinicianReview(
 
 export function getClinicianReviewWorkflowReport(): Promise<ClinicianReviewWorkflowReport> {
   return apiRequest<ClinicianReviewWorkflowReport>("/clinician-reviews/report");
+}
+
+export function getClinicianReviewQueue(params?: {
+  limit?: number;
+  offset?: number;
+  unreviewedOnly?: boolean;
+  medicationClass?: string;
+  reviewStatus?: "all" | "unreviewed" | "reviewed" | "uncertain" | "insufficient_context" | "skip";
+  subjectId?: number | null;
+  reasonTagPresence?: "all" | "has_reason_tags" | "no_reason_tags";
+}): Promise<ClinicianReviewQueueResponse> {
+  const query = new URLSearchParams();
+  query.set("limit", String(params?.limit ?? 200));
+  query.set("offset", String(params?.offset ?? 0));
+  if (params?.unreviewedOnly) {
+    query.set("unreviewed_only", "true");
+  }
+  if (params?.medicationClass) {
+    query.set("medication_class", params.medicationClass);
+  }
+  if (params?.reviewStatus) {
+    query.set("review_status", params.reviewStatus);
+  }
+  if (params?.subjectId != null) {
+    query.set("subject_id", String(params.subjectId));
+  }
+  if (params?.reasonTagPresence) {
+    query.set("reason_tag_presence", params.reasonTagPresence);
+  }
+  return apiRequest<ClinicianReviewQueueResponse>(`/clinician-reviews/queue?${query.toString()}`);
 }

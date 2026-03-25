@@ -359,6 +359,7 @@ class ClinicianReviewSubmissionRequest(BaseModel):
     review_timestamp: str
     modeling__row_id: str | None = None
     reviewer_id: str | None = None
+    review_submission_source: str | None = None
     label__clinician_priority_level: Literal["low", "medium", "high"]
     label__clinician_priority_score: float | None = Field(default=None, ge=0, le=10)
     label__clinician_review_status: Literal[
@@ -389,21 +390,41 @@ class ReviewQueueSummary(BaseModel):
 
 
 class ClinicianReviewWorkflowReport(BaseModel):
-    """Compact structured report for the Phase 5 review workflow."""
+    """Compact structured report for the Phase 6 densification workflow."""
 
     contract_version: str
     generated_at: str
     phase_scope_statement: str
     artifact_paths: dict[str, str]
+    queue_generation_logic: list[str] = Field(default_factory=list)
     reviewable_row_count: int
     clinician_reviewed_row_count: int
+    remaining_unreviewed_row_count: int
+    clinician_review_coverage_rate: float
+    unlabeled_reviewable_rate: float
     required_level_populated_count: int
     numeric_score_populated_count: int
     reason_tag_row_coverage_count: int
+    reviewable_distinct_subject_count: int
+    reviewable_distinct_encounter_count: int
+    clinician_reviewed_distinct_subject_count: int
+    clinician_reviewed_distinct_encounter_count: int
+    clinician_reviewed_medication_class_count: int
+    reviewable_rows_with_modeling_row_id_count: int
+    reviewable_rows_with_modeling_row_id_rate: float
+    benchmark_available_reviewable_row_count: int
+    benchmark_available_reviewable_row_rate: float
     priority_level_frequencies: dict[str, int]
     reason_tag_frequencies: dict[str, int]
     review_status_frequencies: dict[str, int]
+    reviewable_rows_by_medication_class: dict[str, int]
+    clinician_reviewed_rows_by_medication_class: dict[str, int]
+    clinician_reviewed_rows_by_patient: dict[str, int]
+    queue_priority_reason_frequencies: dict[str, int]
+    label_balance_assessment: dict[str, object]
+    milestone_status: dict[str, dict[str, object]]
     traceability_validation: dict[str, int]
+    top_queue_preview: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ClinicianReviewSubmissionResponse(BaseModel):
@@ -411,6 +432,58 @@ class ClinicianReviewSubmissionResponse(BaseModel):
 
     review: ClinicianReviewRecord
     workflow_report: ClinicianReviewWorkflowReport
+
+
+class ClinicianReviewQueueEntry(BaseModel):
+    """One deterministic Phase 6 review queue row."""
+
+    subject_id: int
+    encounter_id: str
+    hadm_id: int | None = None
+    stay_id: int | None = None
+    review_timestamp: str
+    medication_standardized: str
+    medication_normalized: str | None = None
+    medication_class_standardized: str | None = None
+    first_scope_supported_class_flag: int | None = None
+    medication_status_at_review: str | None = None
+    active_at_review_flag: int | None = None
+    dose_value: str | None = None
+    dose_unit: str | None = None
+    route: str | None = None
+    frequency: str | None = None
+    modeling__row_id: str | None = None
+    benchmark__current_rule_score: float | None = None
+    benchmark__current_rule_score_level: Literal["low", "medium", "high"] | None = None
+    benchmark__current_rule_available_flag: int | None = None
+    label__primary_action_label: str | None = None
+    label__unknown_or_insufficient_evidence_flag: int | None = None
+    meta__dataset_row_eligible_for_training_flag: int | None = None
+    reviewable_flag: bool = True
+    current_clinician_reviewed_flag: int = 0
+    queue_rank: int
+    queue_priority_score: int
+    queue_priority_band: str
+    queue_priority_reasons: list[str] = Field(default_factory=list)
+    needs_review_justification: str
+    class_reviewed_count: int = 0
+    class_reviewable_count: int = 0
+    subject_reviewed_count: int = 0
+    subject_reviewable_count: int = 0
+    encounter_reviewed_count: int = 0
+    encounter_reviewable_count: int = 0
+    clinician_review: ClinicianReviewRecord | None = None
+
+
+class ClinicianReviewQueueResponse(BaseModel):
+    """Queue payload used by the Phase 6 review-queue UI."""
+
+    generated_at: str
+    total_queue_rows: int
+    filtered_queue_rows: int
+    filters_applied: dict[str, object]
+    workflow_report: ClinicianReviewWorkflowReport
+    rows: list[ClinicianReviewQueueEntry]
 
 
 class PatientMedicationCard(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from datetime import date, datetime
+from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
@@ -19,6 +20,8 @@ from opti_med.api.schemas import (
     AdmissionDetailResponse,
     AdmissionSummariesResponse,
     AdmissionSummary,
+    ClinicianReviewQueueEntry,
+    ClinicianReviewQueueResponse,
     ClinicianReviewSubmissionRequest,
     ClinicianReviewSubmissionResponse,
     ClinicianReviewWorkflowReport,
@@ -373,6 +376,64 @@ def create_app() -> FastAPI:
         repository = get_clinician_review_repository()
         report = repository.write_qc_artifacts()
         return ClinicianReviewWorkflowReport(**report)
+
+    @app.get("/clinician-reviews/queue", response_model=ClinicianReviewQueueResponse)
+    def get_clinician_review_queue(
+        limit: int = Query(default=200, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        unreviewed_only: bool = False,
+        medication_class: str | None = None,
+        review_status: str = Query(
+            default="all",
+            pattern="^(all|unreviewed|reviewed|uncertain|insufficient_context|skip)$",
+        ),
+        subject_id: int | None = None,
+        reason_tag_presence: str = Query(
+            default="all",
+            pattern="^(all|has_reason_tags|no_reason_tags)$",
+        ),
+    ) -> ClinicianReviewQueueResponse:
+        repository = get_clinician_review_repository()
+        reviewable = repository.load_reviewable_universe()
+        latest = repository.load_latest_reviews()
+        queue = repository.load_review_queue(
+            latest_reviews=latest,
+            reviewable_universe=reviewable,
+        )
+        report = repository.write_qc_artifacts(
+            latest_reviews=latest,
+            reviewable_universe=reviewable,
+            review_queue=queue,
+        )
+        filtered = repository.filter_review_queue(
+            queue,
+            unreviewed_only=unreviewed_only,
+            medication_class=medication_class,
+            review_status=review_status,
+            subject_id=subject_id,
+            reason_tag_presence=reason_tag_presence,
+        )
+        page = filtered.iloc[offset : offset + limit].copy()
+        rows = [
+            ClinicianReviewQueueEntry(**_build_clinician_review_queue_row(record))
+            for record in page.to_dict(orient="records")
+        ]
+        return ClinicianReviewQueueResponse(
+            generated_at=str(report["generated_at"]),
+            total_queue_rows=int(len(queue)),
+            filtered_queue_rows=int(len(filtered)),
+            filters_applied={
+                "unreviewed_only": bool(unreviewed_only),
+                "medication_class": medication_class,
+                "review_status": review_status,
+                "subject_id": subject_id,
+                "reason_tag_presence": reason_tag_presence,
+                "limit": limit,
+                "offset": offset,
+            },
+            workflow_report=ClinicianReviewWorkflowReport(**report),
+            rows=rows,
+        )
 
     @app.get("/scores/latest", response_model=ScoredOutputSummary)
     def get_latest_scored_output() -> ScoredOutputSummary:
@@ -1262,6 +1323,110 @@ def _latest_clinician_review_lookup(dataframe: pd.DataFrame) -> dict[tuple[int, 
     return lookup
 
 
+def _build_clinician_review_queue_row(record: dict[str, Any]) -> dict[str, Any]:
+    clinician_review = None
+    review_submission_id = _normalize_value(record.get("review_submission_id"))
+    if review_submission_id is not None:
+        review_version = _normalize_value(record.get("review_version"))
+        review_artifact_version = _normalize_value(record.get("review_artifact_version"))
+        review_submission_timestamp = _normalize_value(record.get("review_submission_timestamp"))
+        reviewer_id = _normalize_value(record.get("reviewer_id"))
+        clinician_priority_level = _normalize_value(record.get("label__clinician_priority_level"))
+        clinician_review_status = _normalize_value(record.get("label__clinician_review_status"))
+        clinician_reason_tags = _normalize_value(record.get("label__clinician_reason_tags"))
+        clinician_reviewed_flag = _normalize_value(record.get("label__clinician_reviewed_flag"))
+        clinician_review = {
+            "subject_id": int(record["subject_id"]),
+            "encounter_id": str(record["encounter_id"]),
+            "hadm_id": _optional_int(record.get("hadm_id")),
+            "stay_id": _optional_int(record.get("stay_id")),
+            "medication_standardized": str(record["medication_standardized"]),
+            "medication_normalized": record.get("medication_normalized"),
+            "review_timestamp": str(record["review_timestamp"]),
+            "modeling__row_id": record.get("modeling__row_id"),
+            "review_submission_id": str(review_submission_id),
+            "review_version": int(review_version) if review_version is not None else 1,
+            "review_artifact_version": (
+                str(review_artifact_version) if review_artifact_version is not None else ""
+            ),
+            "review_submission_timestamp": (
+                str(review_submission_timestamp)
+                if review_submission_timestamp is not None
+                else ""
+            ),
+            "reviewer_id": str(reviewer_id) if reviewer_id is not None else "",
+            "label__clinician_priority_level": (
+                str(clinician_priority_level) if clinician_priority_level is not None else "low"
+            ),
+            "label__clinician_priority_score": record.get("label__clinician_priority_score"),
+            "label__clinician_priority_score_level": record.get(
+                "label__clinician_priority_score_level"
+            ),
+            "label__clinician_review_status": (
+                str(clinician_review_status)
+                if clinician_review_status is not None
+                else "reviewed"
+            ),
+            "label__clinician_reason_tags": list(clinician_reason_tags or []),
+            "label__clinician_note": record.get("label__clinician_note"),
+            "label__clinician_reviewed_flag": (
+                int(clinician_reviewed_flag) if clinician_reviewed_flag is not None else 0
+            ),
+            "label__clinician_suggested_action": record.get(
+                "label__clinician_suggested_action"
+            ),
+            "review_provenance_json": record.get("review_provenance_json"),
+        }
+
+    payload = {
+        "subject_id": int(record["subject_id"]),
+        "encounter_id": str(record["encounter_id"]),
+        "hadm_id": _optional_int(record.get("hadm_id")),
+        "stay_id": _optional_int(record.get("stay_id")),
+        "review_timestamp": str(record["review_timestamp"]),
+        "medication_standardized": str(record["medication_standardized"]),
+        "medication_normalized": record.get("medication_normalized"),
+        "medication_class_standardized": record.get("medication_class_standardized"),
+        "first_scope_supported_class_flag": _optional_int(record.get("first_scope_supported_class_flag")),
+        "medication_status_at_review": record.get("medication_status_at_review"),
+        "active_at_review_flag": _optional_int(record.get("active_at_review_flag")),
+        "dose_value": record.get("dose_value"),
+        "dose_unit": record.get("dose_unit"),
+        "route": record.get("route"),
+        "frequency": record.get("frequency"),
+        "modeling__row_id": record.get("modeling__row_id"),
+        "benchmark__current_rule_score": record.get("benchmark__current_rule_score"),
+        "benchmark__current_rule_score_level": record.get("benchmark__current_rule_score_level"),
+        "benchmark__current_rule_available_flag": _optional_int(
+            record.get("benchmark__current_rule_available_flag")
+        ),
+        "label__primary_action_label": record.get("label__primary_action_label"),
+        "label__unknown_or_insufficient_evidence_flag": _optional_int(
+            record.get("label__unknown_or_insufficient_evidence_flag")
+        ),
+        "meta__dataset_row_eligible_for_training_flag": _optional_int(
+            record.get("meta__dataset_row_eligible_for_training_flag")
+        ),
+        "reviewable_flag": bool(record.get("reviewable_flag", True)),
+        "current_clinician_reviewed_flag": int(
+            record.get("current_clinician_reviewed_flag") or 0
+        ),
+        "queue_rank": int(record.get("queue_rank") or 0),
+        "queue_priority_score": int(record.get("queue_priority_score") or 0),
+        "queue_priority_band": str(record.get("queue_priority_band") or "review_backlog"),
+        "queue_priority_reasons": list(record.get("queue_priority_reasons") or []),
+        "needs_review_justification": str(record.get("needs_review_justification") or ""),
+        "class_reviewed_count": int(record.get("class_reviewed_count") or 0),
+        "class_reviewable_count": int(record.get("class_reviewable_count") or 0),
+        "subject_reviewed_count": int(record.get("subject_reviewed_count") or 0),
+        "subject_reviewable_count": int(record.get("subject_reviewable_count") or 0),
+        "encounter_reviewed_count": int(record.get("encounter_reviewed_count") or 0),
+        "encounter_reviewable_count": int(record.get("encounter_reviewable_count") or 0),
+        "clinician_review": clinician_review,
+    }
+    return _clean_record(payload)
+
+
 def _review_key_tuple(
     *,
     subject_id: int,
@@ -1280,6 +1445,12 @@ def _review_key_tuple(
 def _safe_int(value: object) -> int:
     if value is None or pd.isna(value):
         return 0
+    return int(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or pd.isna(value):
+        return None
     return int(value)
 
 
