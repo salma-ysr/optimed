@@ -57,6 +57,13 @@ FIRST_SCOPE_INGREDIENT_CLASS_LABELS: dict[str, tuple[str, ...]] = {
     "tramadol": ("opioid",),
     "ziprasidone": ("antipsychotic",),
 }
+SUPPORTED_SCOPE_INGREDIENT_SUFFIXES: tuple[str, ...] = (
+    " citrate",
+    " hydrochloride",
+    " sodium",
+    " tartrate",
+    " succinate",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +92,7 @@ class FirstScopeRxNormClassAssigner:
                 },
             )
 
-        class_labels = FIRST_SCOPE_INGREDIENT_CLASS_LABELS.get(ingredient_label, tuple())
+        class_labels = resolve_supported_scope_class_labels(ingredient_label)
         if class_labels:
             return MedicationClassAssignment(
                 standardized_ingredient_id=ingredient_id,
@@ -143,3 +150,42 @@ def _normalized_text(value: object) -> str | None:
         return None
     text = str(value).strip().lower()
     return text or None
+
+
+def resolve_supported_scope_class_labels(ingredient_label: object) -> tuple[str, ...]:
+    """Resolve first-scope class labels from one standardized ingredient-ish label.
+
+    This remains intentionally conservative. It only broadens matching enough to
+    recover obvious salt-form and simple combination variants from existing
+    RxNorm-standardized text without inventing a new dossier-wide ontology.
+    """
+    normalized = _normalized_text(ingredient_label)
+    if normalized is None:
+        return tuple()
+
+    ordered: list[str] = []
+    for candidate in _candidate_supported_scope_labels(normalized):
+        for class_label in FIRST_SCOPE_INGREDIENT_CLASS_LABELS.get(candidate, tuple()):
+            if class_label not in ordered:
+                ordered.append(class_label)
+    return tuple(ordered)
+
+
+def _candidate_supported_scope_labels(normalized_label: str) -> tuple[str, ...]:
+    candidates: list[str] = [normalized_label]
+    if "/" in normalized_label:
+        candidates.extend(
+            part.strip()
+            for part in normalized_label.split("/")
+            if part.strip()
+        )
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+        for suffix in SUPPORTED_SCOPE_INGREDIENT_SUFFIXES:
+            if candidate.endswith(suffix):
+                stripped = candidate[: -len(suffix)].strip()
+                if stripped and stripped not in deduped:
+                    deduped.append(stripped)
+    return tuple(deduped)

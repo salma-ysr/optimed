@@ -44,6 +44,8 @@ from opti_med.data_access.encounters import EncounterIndexBuilder
 from opti_med.data_access.medication_events import CanonicalMedicationEventBuilder
 from opti_med.data_access.medication_snapshot import build_review_rows_for_encounter
 from opti_med.data_access.medication_snapshot import select_review_timestamp_metadata_for_encounter
+from opti_med.data_access.provenance import loads_json_or_none
+from opti_med.medication_semantics import resolve_supported_scope_class_labels
 from opti_med.scoring.scorer import DeprescribingPriorityScorer
 from opti_med.time_semantics.constants import (
     MEDICATION_STATUS_ACTIVE_AT_REVIEW,
@@ -452,6 +454,18 @@ def _load_medication_snapshot_dataframe() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+@lru_cache
+def _load_medication_rxnorm_mapping_dataframe() -> pd.DataFrame:
+    settings = get_settings()
+    path = settings.medication_rxnorm_mapping_output_path
+    if path.exists():
+        dataframe = pd.read_parquet(path)
+        if "class_labels_json" in dataframe.columns:
+            dataframe["class_labels_json"] = dataframe["class_labels_json"].map(loads_json_or_none)
+        return dataframe.where(pd.notna(dataframe), None)
+    return pd.DataFrame()
+
+
 def _clean_record(record: dict) -> dict:
     return {
         key: (_normalize_value(value))
@@ -558,6 +572,123 @@ def _medication_classes_from_record(record: dict) -> list[str]:
     if int(record.get("antipsychotic_flag", 0)) == 1:
         classes.append("Antipsychotic")
     return classes
+
+
+def _title_case_medication_class_label(label: str) -> str:
+    normalized = str(label).strip().lower()
+    mapping = {
+        "benzodiazepine": "Benzodiazepine",
+        "opioid": "Opioid",
+        "anticholinergic": "Anticholinergic",
+        "antipsychotic": "Antipsychotic",
+        "ppi": "PPI",
+    }
+    return mapping.get(normalized, normalized.replace("_", " ").title())
+
+
+def _mapping_class_labels(record: dict | None) -> list[str]:
+    if record is None:
+        return []
+    parsed = record.get("class_labels_json")
+    labels: list[str] = []
+    if isinstance(parsed, list):
+        for item in parsed:
+            text = str(item).strip()
+            if text:
+                labels.append(_title_case_medication_class_label(text))
+    if labels:
+        return labels
+    for candidate in [
+        record.get("ingredient_standardized"),
+        record.get("medication_standardized"),
+        record.get("medication_query_key"),
+    ]:
+        for resolved in resolve_supported_scope_class_labels(candidate):
+            title_cased = _title_case_medication_class_label(resolved)
+            if title_cased not in labels:
+                labels.append(title_cased)
+    return labels
+
+
+def _find_medication_rxnorm_mapping_record(*candidates: object) -> dict | None:
+    mapping = _load_medication_rxnorm_mapping_dataframe()
+    if mapping.empty:
+        return None
+    normalized_candidates = [
+        _normalized_lookup_text(candidate)
+        for candidate in candidates
+    ]
+    normalized_candidates = [candidate for candidate in normalized_candidates if candidate]
+    if not normalized_candidates:
+        return None
+    for candidate in normalized_candidates:
+        matches = mapping.loc[
+            mapping["medication_query_key"].astype(str).str.lower() == candidate
+        ].copy()
+        if matches.empty:
+            matches = mapping.loc[
+                mapping["medication_normalized"].astype(str).str.lower() == candidate
+            ].copy()
+        if matches.empty:
+            matches = mapping.loc[
+                mapping["medication_standardized"].astype(str).str.lower() == candidate
+            ].copy()
+        if matches.empty:
+            matches = mapping.loc[
+                mapping["ingredient_standardized"].astype(str).str.lower() == candidate
+            ].copy()
+        if not matches.empty:
+            sort_columns = [
+                column
+                for column in ["lookup_timestamp", "lookup_status"]
+                if column in matches.columns
+            ]
+            if sort_columns:
+                matches = matches.sort_values(
+                    sort_columns,
+                    ascending=[False, True][: len(sort_columns)],
+                    na_position="last",
+                ).reset_index(drop=True)
+            else:
+                matches = matches.reset_index(drop=True)
+            return matches.iloc[0].to_dict()
+    return None
+
+
+def _resolved_medication_classes(
+    *,
+    score_record: dict | None,
+    review_row: dict | None = None,
+    reviewable_row: dict | None = None,
+) -> list[str]:
+    ordered: list[str] = []
+    for label in _medication_classes_from_record(score_record or {}):
+        if label not in ordered:
+            ordered.append(label)
+    if reviewable_row is not None:
+        reviewable_class = _normalized_lookup_text(reviewable_row.get("medication_class_standardized"))
+        if reviewable_class and reviewable_class != "unresolved":
+            title_cased = _title_case_medication_class_label(reviewable_class)
+            if title_cased not in ordered:
+                ordered.append(title_cased)
+    mapping_record = _find_medication_rxnorm_mapping_record(
+        (review_row or {}).get("medication_normalized"),
+        (review_row or {}).get("medication_name"),
+        (review_row or {}).get("raw_medication_name"),
+        (score_record or {}).get("drug_normalized"),
+        (score_record or {}).get("drug"),
+    )
+    for label in _mapping_class_labels(mapping_record):
+        if label not in ordered:
+            ordered.append(label)
+    return ordered
+
+
+def _normalized_lookup_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
 
 
 def _build_medication_summary(record: dict) -> MedicationRowSummary:
@@ -983,6 +1114,19 @@ def _build_review_medication_card(
     review_repository: ClinicianReviewRepository,
     latest_review_lookup: dict[tuple[int, str, str, str], dict],
 ) -> PatientMedicationCard:
+    reviewable_row = review_repository.resolve_reviewable_row(
+        subject_id=int(review_row["subject_id"]),
+        encounter_id=str(selected_encounter["encounter_id"]),
+        review_timestamp=review_row.get("review_timestamp"),
+        medication_candidates=[
+            review_row.get("medication_normalized"),
+            review_row.get("medication_name"),
+            review_row.get("raw_medication_name"),
+            (score_record or {}).get("drug_normalized"),
+            (score_record or {}).get("drug"),
+        ],
+        selected_event_id=review_row.get("selected_event_id"),
+    )
     base_record = {
         "subject_id": int(review_row["subject_id"]),
         "encounter_id": str(selected_encounter["encounter_id"]),
@@ -1004,7 +1148,11 @@ def _build_review_medication_card(
         "length_of_stay_days": float(selected_encounter.get("hospital_length_of_stay_days") or 0.0),
         "drug": str(review_row.get("medication_name") or review_row.get("raw_medication_name") or review_row["medication_normalized"]),
         "drug_normalized": review_row.get("medication_normalized"),
-        "medication_classes": _medication_classes_from_record(score_record or {}),
+        "medication_classes": _resolved_medication_classes(
+            score_record=score_record,
+            review_row=review_row,
+            reviewable_row=reviewable_row,
+        ),
         "starttime": str((score_record or {}).get("starttime") or review_row.get("review_timestamp") or review_row.get("snapshot_time") or ""),
         "stoptime": (score_record or {}).get("stoptime"),
         "medication_episode_id": (score_record or {}).get("medication_episode_id"),
@@ -1045,19 +1193,6 @@ def _build_review_medication_card(
             else "no_scored_match_for_review_medication"
         ),
     }
-    reviewable_row = review_repository.resolve_reviewable_row(
-        subject_id=int(review_row["subject_id"]),
-        encounter_id=str(selected_encounter["encounter_id"]),
-        review_timestamp=review_row.get("review_timestamp"),
-        medication_candidates=[
-            review_row.get("medication_normalized"),
-            review_row.get("medication_name"),
-            review_row.get("raw_medication_name"),
-            base_record["drug_normalized"],
-            base_record["drug"],
-        ],
-        selected_event_id=review_row.get("selected_event_id"),
-    )
     clinician_review = None
     if reviewable_row is not None:
         review_lookup_key = _review_key_tuple(
