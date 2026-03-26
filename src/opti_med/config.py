@@ -30,11 +30,17 @@ DEFAULT_FIRST_SCOPE_LABEL_QC_REPORT_PATH = Path(
 DEFAULT_FIRST_SCOPE_DATASET_QC_REPORT_PATH = Path(
     "docs/ml_pivot/17a_dataset_v1_65plus_first_scope_qc.md"
 )
+DEFAULT_FIRST_SCOPE_ORDINAL_TARGET_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/20_phase7_ordinal_target_preparation_65plus_first_scope.md"
+)
 DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH = Path(
     "docs/ml_pivot/18_phase5_clinician_review_workflow_qc.md"
 )
 DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH = Path(
     "docs/ml_pivot/19_phase6_clinician_review_densification_qc.md"
+)
+DEFAULT_TARGETED_BLIND_EVAL_QC_REPORT_PATH = Path(
+    "docs/ml_pivot/22_targeted_blind_clinician_evaluation_slice_65plus_first_scope.md"
 )
 DEFAULT_INGESTION_BEHAVIOR = "incremental"
 DEFAULT_INGESTION_CHUNK_SIZE = 100_000
@@ -70,6 +76,12 @@ class Settings:
     clinician_review_qc_report_output_path: Path = DEFAULT_PHASE5_CLINICIAN_REVIEW_QC_REPORT_PATH
     clinician_review_phase6_qc_report_output_path: Path = (
         DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH
+    )
+    first_scope_ordinal_target_qc_report_output_path: Path = (
+        DEFAULT_FIRST_SCOPE_ORDINAL_TARGET_QC_REPORT_PATH
+    )
+    targeted_blind_eval_qc_report_output_path: Path = (
+        DEFAULT_TARGETED_BLIND_EVAL_QC_REPORT_PATH
     )
     ingestion_behavior: str = DEFAULT_INGESTION_BEHAVIOR
     ingestion_chunk_size: int = DEFAULT_INGESTION_CHUNK_SIZE
@@ -259,6 +271,41 @@ class Settings:
         return self.clinician_review_phase6_qc_report_output_path
 
     @property
+    def first_scope_ordinal_targets_output_path(self) -> Path:
+        """Return the persisted ordinal-target sidecar artifact path."""
+        return self.modeling_root / "encounter_medication_ordinal_targets_v1_65plus_first_scope.parquet"
+
+    @property
+    def first_scope_ordinal_targets_summary_path(self) -> Path:
+        """Return the machine-readable ordinal-target QC summary path."""
+        return self.modeling_root / "encounter_medication_ordinal_targets_v1_65plus_first_scope_summary.json"
+
+    @property
+    def first_scope_ordinal_target_qc_report_path(self) -> Path:
+        """Return the markdown QC report path for ordinal target preparation."""
+        return self.first_scope_ordinal_target_qc_report_output_path
+
+    @property
+    def first_scope_ordinal_scored_universe_output_path(self) -> Path:
+        """Return the persisted full-universe ordinal model prediction artifact path."""
+        return self.modeling_root / "encounter_medication_ordinal_scored_universe_v1_65plus_first_scope.parquet"
+
+    @property
+    def targeted_blind_eval_slice_output_path(self) -> Path:
+        """Return the targeted blind clinician evaluation slice artifact path."""
+        return self.label_root / "clinician_review_targeted_blind_eval_slice_v1_65plus_first_scope.parquet"
+
+    @property
+    def targeted_blind_eval_summary_path(self) -> Path:
+        """Return the machine-readable targeted blind evaluation summary path."""
+        return self.label_root / "clinician_review_targeted_blind_eval_slice_v1_65plus_first_scope_summary.json"
+
+    @property
+    def targeted_blind_eval_qc_report_path(self) -> Path:
+        """Return the markdown QC report path for the targeted blind evaluation slice."""
+        return self.targeted_blind_eval_qc_report_output_path
+
+    @property
     def encounter_index_output_path(self) -> Path:
         """Return the default persisted encounter-index artifact path."""
         return self.standardized_root / "encounter_index.parquet"
@@ -340,6 +387,18 @@ class Settings:
                 str(DEFAULT_PHASE6_CLINICIAN_REVIEW_DENSIFICATION_QC_REPORT_PATH),
             )
         )
+        first_scope_ordinal_target_qc_report_output_path = Path(
+            os.getenv(
+                "OPTI_MED_FIRST_SCOPE_ORDINAL_TARGET_QC_REPORT_PATH",
+                str(DEFAULT_FIRST_SCOPE_ORDINAL_TARGET_QC_REPORT_PATH),
+            )
+        )
+        targeted_blind_eval_qc_report_output_path = Path(
+            os.getenv(
+                "OPTI_MED_TARGETED_BLIND_EVAL_QC_REPORT_PATH",
+                str(DEFAULT_TARGETED_BLIND_EVAL_QC_REPORT_PATH),
+            )
+        )
         ingestion_behavior = os.getenv(
             "OPTI_MED_INGESTION_BEHAVIOR",
             DEFAULT_INGESTION_BEHAVIOR,
@@ -397,6 +456,12 @@ class Settings:
             clinician_review_qc_report_output_path=clinician_review_qc_report_output_path,
             clinician_review_phase6_qc_report_output_path=(
                 clinician_review_phase6_qc_report_output_path
+            ),
+            first_scope_ordinal_target_qc_report_output_path=(
+                first_scope_ordinal_target_qc_report_output_path
+            ),
+            targeted_blind_eval_qc_report_output_path=(
+                targeted_blind_eval_qc_report_output_path
             ),
             ingestion_behavior=ingestion_behavior,
             ingestion_chunk_size=ingestion_chunk_size,

@@ -7,11 +7,13 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 from opti_med.api.clinician_reviews import (
     ClinicianReviewRepository,
     build_review_queue_hints,
 )
+from opti_med.api.app import _build_clinician_review_queue_row
 from opti_med.config import Settings
 
 
@@ -271,6 +273,67 @@ class ClinicianReviewWorkflowTests(unittest.TestCase):
             selected_event_id=None,
         )
         self.assertIsNone(resolved)
+
+    def test_queue_row_serializer_accepts_array_like_reason_fields(self) -> None:
+        row = _build_clinician_review_queue_row(
+            {
+                "subject_id": 1001,
+                "encounter_id": "hadm:2001",
+                "hadm_id": 2001,
+                "stay_id": 3001,
+                "review_timestamp": "2125-03-20 10:00:00",
+                "medication_standardized": "olanzapine",
+                "medication_normalized": "olanzapine",
+                "medication_class_standardized": "antipsychotic",
+                "first_scope_supported_class_flag": 1,
+                "medication_status_at_review": "active_at_review_time",
+                "active_at_review_flag": 1,
+                "dose_value": "5",
+                "dose_unit": "mg",
+                "route": "PO",
+                "frequency": "HS",
+                "modeling__row_id": self._expected_row_id("olanzapine"),
+                "reviewable_flag": True,
+                "current_clinician_reviewed_flag": 1,
+                "queue_rank": 1,
+                "queue_priority_score": 320,
+                "queue_priority_band": "uncertain_existing_review",
+                "queue_priority_reasons": np.array(
+                    ["uncertain_existing_review", "medium_high_boundary"],
+                    dtype=object,
+                ),
+                "needs_review_justification": "Uncertain prior review and borderline case.",
+                "class_reviewed_count": 1,
+                "class_reviewable_count": 2,
+                "subject_reviewed_count": 1,
+                "subject_reviewable_count": 1,
+                "encounter_reviewed_count": 1,
+                "encounter_reviewable_count": 1,
+                "review_submission_id": "submission-1",
+                "review_version": 1,
+                "review_artifact_version": "test.v1",
+                "review_submission_timestamp": "2026-03-25T12:00:00Z",
+                "reviewer_id": "tester",
+                "label__clinician_priority_level": "high",
+                "label__clinician_priority_score": 8,
+                "label__clinician_priority_score_level": "high",
+                "label__clinician_review_status": "reviewed",
+                "label__clinician_reason_tags": np.array(["monitoring_needed"], dtype=object),
+                "label__clinician_note": "Reviewed.",
+                "label__clinician_reviewed_flag": 1,
+                "label__clinician_suggested_action": "monitor",
+                "review_provenance_json": {"submission_source": "blind_eval_slice_ui_phase8"},
+            }
+        )
+
+        self.assertEqual(
+            row["queue_priority_reasons"],
+            ["uncertain_existing_review", "medium_high_boundary"],
+        )
+        self.assertEqual(
+            row["clinician_review"]["label__clinician_reason_tags"],
+            ["monitoring_needed"],
+        )
 
     def _write_reviewable_inputs(self) -> None:
         first_scope = pd.DataFrame(

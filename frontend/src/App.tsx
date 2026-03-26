@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { BlindEvaluationQueuePage } from "./pages/BlindEvaluationQueuePage";
 import { RecordDetailsPage } from "./pages/RecordDetailsPage";
 import { RecordsListPage } from "./pages/RecordsListPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
@@ -8,6 +9,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<RecordsListPage />} />
       <Route path="/review-queue" element={<ReviewQueuePage />} />
+      <Route path="/blind-eval-queue" element={<BlindEvaluationQueuePage />} />
       <Route path="/patients/:subjectId" element={<RecordDetailsPage />} />
       <Route path="/records/:subjectId/:hadmId" element={<RecordDetailsPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />

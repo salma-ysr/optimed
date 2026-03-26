@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from opti_med.api.clinician_reviews import (
     ClinicianReviewRepository,
     build_review_queue_hints,
+    overlay_latest_reviews_on_queue_rows,
     summarize_review_queue,
 )
 from opti_med.api.repository import ScoredDataRepository
@@ -50,6 +51,11 @@ from opti_med.data_access.medication_snapshot import select_review_timestamp_met
 from opti_med.data_access.provenance import loads_json_or_none
 from opti_med.medication_semantics import resolve_supported_scope_class_labels
 from opti_med.scoring.scorer import DeprescribingPriorityScorer
+from opti_med.modeling.first_scope_targeted_blind_eval import (
+    build_first_scope_targeted_blind_eval,
+    filter_targeted_blind_eval_slice,
+    write_targeted_blind_eval_artifacts,
+)
 from opti_med.time_semantics.constants import (
     MEDICATION_STATUS_ACTIVE_AT_REVIEW,
     REVIEW_TIMESTAMP_SOURCE_PREBUILT_SNAPSHOT,
@@ -435,6 +441,104 @@ def create_app() -> FastAPI:
             rows=rows,
         )
 
+    @app.get("/clinician-reviews/blind-eval-slice", response_model=ClinicianReviewQueueResponse)
+    def get_targeted_blind_eval_slice(
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        unreviewed_only: bool = False,
+        medication_class: str | None = None,
+        review_status: str = Query(
+            default="all",
+            pattern="^(all|unreviewed|reviewed|uncertain|insufficient_context|skip)$",
+        ),
+        subject_id: int | None = None,
+        priority_band: str = Query(
+            default="all",
+            pattern="^(all|model_rule_disagreement|uncertain_existing_review|medium_high_boundary|high_signal_unreviewed_fallback|mixed_signal_candidate)$",
+        ),
+    ) -> ClinicianReviewQueueResponse:
+        repository = get_clinician_review_repository()
+        settings = get_settings()
+        try:
+            dataset = pd.read_parquet(settings.first_scope_dataset_output_path)
+            ordinal_targets = pd.read_parquet(settings.first_scope_ordinal_targets_output_path)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Targeted blind evaluation slice requires the persisted Dataset v1 and ordinal target artifacts."
+                ),
+            ) from exc
+
+        reviewable = repository.load_reviewable_universe()
+        latest = repository.load_latest_reviews()
+        queue = repository.load_review_queue(
+            latest_reviews=latest,
+            reviewable_universe=reviewable,
+        )
+        report = repository.write_qc_artifacts(
+            latest_reviews=latest,
+            reviewable_universe=reviewable,
+            review_queue=queue,
+        )
+        try:
+            if settings.targeted_blind_eval_slice_output_path.exists():
+                frozen_slice = pd.read_parquet(settings.targeted_blind_eval_slice_output_path)
+            else:
+                blind_eval_result = build_first_scope_targeted_blind_eval(
+                    encounter_medication_dataset=dataset,
+                    reviewable_universe=reviewable,
+                    latest_clinician_reviews=latest,
+                    ordinal_targets=ordinal_targets,
+                    random_seed=20260325,
+                )
+                write_targeted_blind_eval_artifacts(
+                    result=blind_eval_result,
+                    scored_universe_output_path=settings.first_scope_ordinal_scored_universe_output_path,
+                    slice_output_path=settings.targeted_blind_eval_slice_output_path,
+                    summary_output_path=settings.targeted_blind_eval_summary_path,
+                    report_output_path=settings.targeted_blind_eval_qc_report_path,
+                )
+                frozen_slice = blind_eval_result.blind_eval_slice
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        blind_eval_slice = overlay_latest_reviews_on_queue_rows(
+            queue_rows=frozen_slice,
+            latest_reviews=latest,
+        )
+
+        filtered = filter_targeted_blind_eval_slice(
+            blind_eval_slice,
+            unreviewed_only=unreviewed_only,
+            medication_class=medication_class,
+            review_status=review_status,
+            subject_id=subject_id,
+            priority_band=priority_band,
+        )
+        page = filtered.iloc[offset : offset + limit].copy()
+        rows = [
+            ClinicianReviewQueueEntry(**_build_clinician_review_queue_row(record))
+            for record in page.to_dict(orient="records")
+        ]
+        return ClinicianReviewQueueResponse(
+            generated_at=str(report["generated_at"]),
+            total_queue_rows=int(len(blind_eval_slice)),
+            filtered_queue_rows=int(len(filtered)),
+            filters_applied={
+                "blind_mode": True,
+                "unreviewed_only": bool(unreviewed_only),
+                "medication_class": medication_class,
+                "review_status": review_status,
+                "subject_id": subject_id,
+                "priority_band": priority_band,
+                "limit": limit,
+                "offset": offset,
+            },
+            workflow_report=ClinicianReviewWorkflowReport(**report),
+            rows=rows,
+        )
+
     @app.get("/scores/latest", response_model=ScoredOutputSummary)
     def get_latest_scored_output() -> ScoredOutputSummary:
         repository = get_repository()
@@ -541,6 +645,8 @@ def _normalize_value(value: object) -> object:
         return value
     if isinstance(value, tuple):
         return list(value)
+    if type(value).__name__ == "ndarray":
+        return value.tolist()
     if isinstance(value, pd.Timestamp):
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, datetime):
@@ -552,6 +658,27 @@ def _normalize_value(value: object) -> object:
     if pd.isna(value):
         return None
     return value
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    normalized = _normalize_value(value)
+    if normalized is None:
+        return []
+    if isinstance(normalized, list):
+        items = normalized
+    elif isinstance(normalized, tuple):
+        items = list(normalized)
+    else:
+        items = [normalized]
+    cleaned: list[str] = []
+    for item in items:
+        normalized_item = _normalize_value(item)
+        if normalized_item is None:
+            continue
+        text = str(normalized_item).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
 
 
 def _build_admission_summaries(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -1333,7 +1460,7 @@ def _build_clinician_review_queue_row(record: dict[str, Any]) -> dict[str, Any]:
         reviewer_id = _normalize_value(record.get("reviewer_id"))
         clinician_priority_level = _normalize_value(record.get("label__clinician_priority_level"))
         clinician_review_status = _normalize_value(record.get("label__clinician_review_status"))
-        clinician_reason_tags = _normalize_value(record.get("label__clinician_reason_tags"))
+        clinician_reason_tags = _normalize_string_list(record.get("label__clinician_reason_tags"))
         clinician_reviewed_flag = _normalize_value(record.get("label__clinician_reviewed_flag"))
         clinician_review = {
             "subject_id": int(record["subject_id"]),
@@ -1367,7 +1494,7 @@ def _build_clinician_review_queue_row(record: dict[str, Any]) -> dict[str, Any]:
                 if clinician_review_status is not None
                 else "reviewed"
             ),
-            "label__clinician_reason_tags": list(clinician_reason_tags or []),
+            "label__clinician_reason_tags": clinician_reason_tags,
             "label__clinician_note": record.get("label__clinician_note"),
             "label__clinician_reviewed_flag": (
                 int(clinician_reviewed_flag) if clinician_reviewed_flag is not None else 0
@@ -1414,7 +1541,7 @@ def _build_clinician_review_queue_row(record: dict[str, Any]) -> dict[str, Any]:
         "queue_rank": int(record.get("queue_rank") or 0),
         "queue_priority_score": int(record.get("queue_priority_score") or 0),
         "queue_priority_band": str(record.get("queue_priority_band") or "review_backlog"),
-        "queue_priority_reasons": list(record.get("queue_priority_reasons") or []),
+        "queue_priority_reasons": _normalize_string_list(record.get("queue_priority_reasons")),
         "needs_review_justification": str(record.get("needs_review_justification") or ""),
         "class_reviewed_count": int(record.get("class_reviewed_count") or 0),
         "class_reviewable_count": int(record.get("class_reviewable_count") or 0),

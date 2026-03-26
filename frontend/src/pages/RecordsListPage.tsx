@@ -193,6 +193,9 @@ export function RecordsListPage() {
             <Link to="/review-queue" className="list-control-button hero-link-button">
               Ouvrir la file de revue Phase 6
             </Link>
+            <Link to="/blind-eval-queue" className="list-control-button hero-link-button">
+              Ouvrir la session blindée finale
+            </Link>
           </div>
         </div>
       </section>

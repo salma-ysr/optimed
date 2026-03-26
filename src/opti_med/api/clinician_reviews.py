@@ -28,6 +28,7 @@ ALLOWED_REVIEW_SUBMISSION_SOURCES = (
     "dossier_ui_phase5",
     "dossier_ui_phase6",
     "review_queue_ui_phase6",
+    "blind_eval_slice_ui_phase8",
 )
 REVIEW_KEY_COLUMNS = [
     "subject_id",
@@ -741,6 +742,59 @@ def summarize_review_queue(cards: list[dict[str, Any]]) -> dict[str, int]:
         "priority_rows": len(priority_cards),
         "disagreement_candidate_rows": len(disagreement_cards),
     }
+
+
+def overlay_latest_reviews_on_queue_rows(
+    *,
+    queue_rows: pd.DataFrame,
+    latest_reviews: pd.DataFrame,
+) -> pd.DataFrame:
+    """Refresh latest-review fields on a fixed queue without changing membership or order."""
+    queue = queue_rows.copy()
+    if queue.empty:
+        return queue
+
+    latest = _normalize_review_snapshot(latest_reviews.copy())
+    latest_columns = [
+        *REVIEW_KEY_COLUMNS,
+        "review_submission_id",
+        "review_version",
+        "review_artifact_version",
+        "review_submission_timestamp",
+        "reviewer_id",
+        "label__clinician_priority_level",
+        "label__clinician_priority_score",
+        "label__clinician_priority_score_level",
+        "label__clinician_review_status",
+        "label__clinician_reason_tags",
+        "label__clinician_note",
+        "label__clinician_reviewed_flag",
+        "label__clinician_suggested_action",
+        "review_provenance_json",
+    ]
+    refresh_columns = [column_name for column_name in latest_columns if column_name not in REVIEW_KEY_COLUMNS]
+    if latest.empty:
+        latest_frame = pd.DataFrame(columns=latest_columns)
+    else:
+        latest_frame = latest.loc[:, latest_columns].copy()
+
+    queue["_fixed_session_order"] = range(len(queue))
+    queue = queue.drop(columns=refresh_columns, errors="ignore")
+    queue = queue.merge(
+        latest_frame,
+        how="left",
+        on=REVIEW_KEY_COLUMNS,
+        validate="one_to_one",
+    )
+    queue["label__clinician_reason_tags"] = queue["label__clinician_reason_tags"].map(
+        _normalize_reason_tag_list
+    )
+    queue["review_provenance_json"] = queue["review_provenance_json"].map(_normalize_dict_cell)
+    queue["current_clinician_reviewed_flag"] = queue["review_submission_id"].notna().astype(int)
+    queue = queue.sort_values("_fixed_session_order", kind="mergesort").drop(
+        columns="_fixed_session_order"
+    )
+    return queue.reset_index(drop=True)
 
 
 def build_clinician_review_workflow_report(

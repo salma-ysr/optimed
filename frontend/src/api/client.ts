@@ -107,3 +107,31 @@ export function getClinicianReviewQueue(params?: {
   }
   return apiRequest<ClinicianReviewQueueResponse>(`/clinician-reviews/queue?${query.toString()}`);
 }
+
+export function getBlindEvaluationSlice(params?: {
+  limit?: number;
+  offset?: number;
+  unreviewedOnly?: boolean;
+  medicationClass?: string;
+  reviewStatus?: "all" | "unreviewed" | "reviewed" | "uncertain" | "insufficient_context" | "skip";
+  subjectId?: number | null;
+}): Promise<ClinicianReviewQueueResponse> {
+  const query = new URLSearchParams();
+  query.set("limit", String(params?.limit ?? 50));
+  query.set("offset", String(params?.offset ?? 0));
+  if (params?.unreviewedOnly) {
+    query.set("unreviewed_only", "true");
+  }
+  if (params?.medicationClass) {
+    query.set("medication_class", params.medicationClass);
+  }
+  if (params?.reviewStatus) {
+    query.set("review_status", params.reviewStatus);
+  }
+  if (params?.subjectId != null) {
+    query.set("subject_id", String(params.subjectId));
+  }
+  return apiRequest<ClinicianReviewQueueResponse>(
+    `/clinician-reviews/blind-eval-slice?${query.toString()}`,
+  );
+}
