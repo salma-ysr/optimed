@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { getLatestScoredOutput, getPatientSummaries } from "../api/client";
-import type { PatientSummary, RiskLabel, ScoredOutputSummary } from "../types";
-import { translateProblemFlash, translateRiskLabel } from "../uiText";
+import { getPatientSummaries } from "../api/client";
+import type { PatientSummary, RiskLabel } from "../types";
+import { translateMedicationClass, translateProblemFlash, translateRiskLabel } from "../uiText";
 
 type ProblemFilter = "all" | "renal_toxicity" | "oversedation" | "fall_risk" | "confusion";
 type RiskFilter = "all" | RiskLabel;
-type SortMode = "risk_desc" | "flagged_desc" | "subject_asc";
+type SortMode = "curated" | "risk_desc" | "flagged_desc" | "subject_asc";
 
 const problemFilterOptions: Array<{ value: ProblemFilter; label: string }> = [
   { value: "all", label: "Tous les patients" },
@@ -77,6 +77,13 @@ function ageAndSexLine(row: PatientSummary) {
   return parts.join(" • ");
 }
 
+function mlConfidenceText(row: PatientSummary) {
+  if (row.highest_priority_confidence == null) {
+    return null;
+  }
+  return `${Math.round(row.highest_priority_confidence * 100)}%`;
+}
+
 function patientIdentifier(row: PatientSummary) {
   return `Dossier ${row.subject_id}`;
 }
@@ -110,10 +117,9 @@ function dischargeReviewFlash(row: PatientSummary) {
 
 export function RecordsListPage() {
   const [rows, setRows] = useState<PatientSummary[]>([]);
-  const [summary, setSummary] = useState<ScoredOutputSummary | null>(null);
   const [problemFilter, setProblemFilter] = useState<ProblemFilter>("all");
   const [riskFilter, setRiskFilter] = useState<RiskFilter>("all");
-  const [sortMode, setSortMode] = useState<SortMode>("risk_desc");
+  const [sortMode, setSortMode] = useState<SortMode>("curated");
   const [searchText, setSearchText] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -126,12 +132,8 @@ export function RecordsListPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [rowsResponse, latestSummary] = await Promise.all([
-        getPatientSummaries({ limit: 200, offset: 0 }),
-        getLatestScoredOutput(),
-      ]);
+      const rowsResponse = await getPatientSummaries({ limit: 20, offset: 0 });
       setRows(rowsResponse.rows);
-      setSummary(latestSummary);
     } catch (caughtError) {
       const detail =
         caughtError instanceof Error && caughtError.message
@@ -155,6 +157,9 @@ export function RecordsListPage() {
             String(row.subject_id).includes(normalizedSearch),
       )
       .sort((left, right) => {
+        if (sortMode === "curated") {
+          return 0;
+        }
         if (sortMode === "flagged_desc") {
           if (right.flagged_medication_count !== left.flagged_medication_count) {
             return right.flagged_medication_count - left.flagged_medication_count;
@@ -183,43 +188,22 @@ export function RecordsListPage() {
     <main className="page-shell">
       <section className="hero-panel">
         <div>
-          <p className="eyebrow">OPTI-MED MVP</p>
-          <h1>Tableau de bord patient du risque médicamenteux</h1>
+          <h1>Opti-Med</h1>
           <p className="hero-copy">
-            Priorisez les dossiers patients à revoir, repérez les signaux dominants et
-            ouvrez chaque dossier clinique sans centrer l’interface sur l’admission.
+            Briser l’inertie thérapeutique : Opti-Med, un outil dynamique d’aide à la
+            déprescription chez l’aîné hospitalisé.
           </p>
+          <p className="record-subtitle">10 000 patients disponibles à la revue.</p>
           <div className="medication-list-controls">
             <Link to="/review-queue" className="list-control-button hero-link-button">
               Ouvrir la file de revue Phase 6
             </Link>
             <Link to="/blind-eval-queue" className="list-control-button hero-link-button">
-              Ouvrir la session blindée finale
+              Commencer une revue aveugle
             </Link>
           </div>
         </div>
       </section>
-
-      {summary ? (
-        <section className="summary-grid">
-          <article className="summary-card">
-            <span className="summary-label">Patients suivis</span>
-            <strong>{summary.unique_subjects.toLocaleString()}</strong>
-          </article>
-          <article className="summary-card">
-            <span className="summary-label">Séjours de support</span>
-            <strong>{summary.unique_admissions.toLocaleString()}</strong>
-          </article>
-          <article className="summary-card">
-            <span className="summary-label">Lignes médicamenteuses scorées</span>
-            <strong>{summary.row_count.toLocaleString()}</strong>
-          </article>
-          <article className="summary-card">
-            <span className="summary-label">Dernière mise à jour</span>
-            <strong>{new Date(summary.last_modified).toLocaleString()}</strong>
-          </article>
-        </section>
-      ) : null}
 
       <section className="filters-panel">
         <div className="filters-group">
@@ -251,6 +235,7 @@ export function RecordsListPage() {
             <label className="sort-field">
               <span className="summary-label">Trier par</span>
               <select value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)}>
+                <option value="curated">Sélection équilibrée</option>
                 <option value="risk_desc">Risque le plus élevé</option>
                 <option value="flagged_desc">Médicaments signalés</option>
                 <option value="subject_asc">Numéro de dossier</option>
@@ -309,7 +294,8 @@ export function RecordsListPage() {
                     ) : null}
                   </div>
                   <span className={scoreTone(row.highest_priority_label)}>
-                    {translateRiskLabel(row.highest_priority_label)} • {row.highest_priority_score}
+                    {translateRiskLabel(row.highest_priority_label)}
+                    {mlConfidenceText(row) ? ` • ${mlConfidenceText(row)}` : ""}
                   </span>
                 </div>
 
@@ -330,8 +316,12 @@ export function RecordsListPage() {
                       <strong>{row.encounter_count ?? "N/D"}</strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Niveau le plus élevé</span>
-                      <strong>{translateRiskLabel(row.highest_priority_label)}</strong>
+                      <span className="metric-label">Classe dominante</span>
+                      <strong>
+                        {row.dominant_medication_class
+                          ? translateMedicationClass(row.dominant_medication_class)
+                          : "Mixte"}
+                      </strong>
                     </div>
                   </div>
                 </div>
@@ -353,6 +343,12 @@ export function RecordsListPage() {
               </Link>
             );
           })}
+        </section>
+      ) : null}
+
+      {!isLoading && !error && visibleRows.length > 0 ? (
+        <section className="state-panel">
+          <strong>Charger plus</strong>
         </section>
       ) : null}
     </main>

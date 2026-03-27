@@ -202,6 +202,8 @@ class PatientSummary(BaseModel):
     flagged_medication_count: int
     highest_priority_score: int
     highest_priority_label: str
+    highest_priority_confidence: float | None = None
+    dominant_medication_class: str | None = None
     top_problem_flashes: list[str]
     discharge_imminent_review_flash: str | None = None
     discharge_review_flash: str | None = None
@@ -231,6 +233,7 @@ class PatientEncounterSummary(BaseModel):
     length_of_stay_days: float
     overall_priority_score: int
     overall_priority_label: str
+    overall_priority_confidence: float | None = None
     current_medication_count: int | None = None
     current_polypharmacy_flag: int | None = None
     historical_medication_count: int | None = None
@@ -524,6 +527,9 @@ class PatientMedicationCard(BaseModel):
     review_timestamp_source: str | None = None
     priority_score_source: str | None = None
     medication_standardized: str | None = None
+    rxnorm_rxcui: str | None = None
+    rxnorm_term_type: str | None = None
+    ingredient_standardized: str | None = None
     modeling__row_id: str | None = None
     first_scope_supported_class_flag: int | None = None
     benchmark__current_rule_score: float | None = None
@@ -534,7 +540,17 @@ class PatientMedicationCard(BaseModel):
     review_queue_priority: str | None = None
     review_queue_reasons: list[str] = Field(default_factory=list)
     clinician_review: ClinicianReviewRecord | None = None
-    # Reserved for future model output. These stay null until a separate ML layer is wired in.
+    pharmacist_review_alignment: Literal[
+        "agreed",
+        "off_by_one",
+        "corrected",
+    ] | None = None
+    pharmacist_review_alignment_label: str | None = None
+    ml_priority_label: Literal["low", "medium", "high"] | None = None
+    ml_priority_confidence: float | None = None
+    ml_probability_low: float | None = None
+    ml_probability_medium: float | None = None
+    ml_probability_high: float | None = None
     ml_priority_score: float | None = None
     ml_priority_rank_within_encounter: int | None = None
     ml_top_drivers: list[str] | None = None

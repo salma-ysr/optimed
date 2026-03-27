@@ -239,6 +239,8 @@ export interface PatientSummary {
   flagged_medication_count: number;
   highest_priority_score: number;
   highest_priority_label: RiskLabel;
+  highest_priority_confidence?: number | null;
+  dominant_medication_class?: string | null;
   top_problem_flashes?: string[] | null;
   discharge_imminent_review_flash?: string | null;
   discharge_review_flash?: string | null;
@@ -332,6 +334,7 @@ export interface PatientEncounterSummary {
   length_of_stay_days: number;
   overall_priority_score: number;
   overall_priority_label: RiskLabel;
+  overall_priority_confidence?: number | null;
   current_medication_count?: number | null;
   current_polypharmacy_flag?: number | null;
   historical_medication_count?: number | null;
@@ -404,17 +407,26 @@ export interface PatientMedicationCard extends MedicationRowSummary {
   review_timestamp_source?: string | null;
   priority_score_source?: string | null;
   medication_standardized?: string | null;
+  rxnorm_rxcui?: string | null;
+  rxnorm_term_type?: string | null;
+  ingredient_standardized?: string | null;
   modeling__row_id?: string | null;
   first_scope_supported_class_flag?: number | null;
   benchmark__current_rule_score?: number | null;
   benchmark__current_rule_score_level?: RiskLabel | null;
   benchmark__current_rule_available_flag?: number | null;
   benchmark__medication_class_only_medication_class_standardized?: string | null;
+  pharmacist_review_alignment?: "agreed" | "off_by_one" | "corrected" | null;
+  pharmacist_review_alignment_label?: string | null;
+  ml_priority_label?: RiskLabel | null;
+  ml_priority_confidence?: number | null;
+  ml_probability_low?: number | null;
+  ml_probability_medium?: number | null;
+  ml_probability_high?: number | null;
   reviewable_flag?: boolean;
   review_queue_priority?: string | null;
   review_queue_reasons?: string[] | null;
   clinician_review?: ClinicianReviewRecord | null;
-  // Reserved for future ML output. These remain undefined in the current rule-based dossier.
   ml_priority_score?: number | null;
   ml_priority_rank_within_encounter?: number | null;
   ml_top_drivers?: string[] | null;

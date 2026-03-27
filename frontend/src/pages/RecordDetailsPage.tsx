@@ -97,6 +97,9 @@ function riskTone(label: RiskLabel) {
 }
 
 function medicationClassBadges(medication: PatientMedicationCard) {
+  if (!medication.pharmacist_review_alignment) {
+    return [];
+  }
   return medication.medication_classes.map(translateMedicationClass);
 }
 
@@ -127,7 +130,8 @@ function selectedEncounterSummary(record: PatientDetailResponse) {
 
 function problemFlashReason(flash: ProblemFlash) {
   const translated = translateProblemFlash(flash.label);
-  return `${translated} · ${flash.reason}`;
+  const translatedReason = translateExplanation(flash.reason);
+  return `${translated} · ${translatedReason}`;
 }
 
 function dossierFlashDiagnostic(record: PatientDetailResponse) {
@@ -263,29 +267,49 @@ function medicationCardTone(label: RiskLabel) {
   return "medication-alert-card medication-alert-card-low";
 }
 
+function medicationMlLabel(medication: PatientMedicationCard) {
+  return medication.ml_priority_label ?? null;
+}
+
+function medicationMlConfidenceText(medication: PatientMedicationCard) {
+  if (medication.ml_priority_confidence == null) {
+    return null;
+  }
+  return `${Math.round(medication.ml_priority_confidence * 100)}%`;
+}
+
+function medicationPrimaryTone(medication: PatientMedicationCard): RiskLabel {
+  return medicationMlLabel(medication) ?? "low";
+}
+
+function medicationPrimarySummary(medication: PatientMedicationCard) {
+  const mlLabel = medicationMlLabel(medication);
+  if (mlLabel) {
+    const confidence = medicationMlConfidenceText(medication);
+    return confidence ? `ML pilote ${translateRiskLabel(mlLabel)} • ${confidence}` : `ML pilote ${translateRiskLabel(mlLabel)}`;
+  }
+  return "Hors première portée ML";
+}
+
+function medicationMinimalIdentity(medication: PatientMedicationCard) {
+  const parts = [
+    medication.medication_standardized,
+    medication.ingredient_standardized,
+    medication.rxnorm_rxcui ? `RxCUI ${medication.rxnorm_rxcui}` : null,
+  ].filter(Boolean);
+  return parts.join(" • ");
+}
+
 function routeDoseFrequencyLine(medication: PatientMedicationCard) {
   const evidence = medication.deprescribing_priority_evidence_json ?? {};
-  const candidates = [
-    evidence.dose,
-    evidence.route,
-    evidence.frequency,
-    evidence.freq,
-    evidence.schedule,
-    evidence.sig,
-  ]
+  const candidates = [evidence.route, evidence.frequency]
     .filter((value) => value != null && value !== "")
     .map((value) => String(value));
 
   if (candidates.length > 0) {
     return candidates.join(" • ");
   }
-
-  const classLine = medicationClassBadges(medication);
-  if (classLine.length > 0) {
-    return classLine.join(" • ");
-  }
-
-  return "Posologie détaillée indisponible";
+  return "";
 }
 
 function contextualReasonText(medication: PatientMedicationCard) {
@@ -302,13 +326,6 @@ function contextualReasonText(medication: PatientMedicationCard) {
   }
 
   return translateDriverList(reasons).join(" • ");
-}
-
-function alertSignalText(medication: PatientMedicationCard) {
-  if (medication.deprescribing_priority_summary_alert.trim()) {
-    return medication.deprescribing_priority_summary_alert.trim();
-  }
-  return translateExplanation(medication.deprescribing_priority_explanation);
 }
 
 function evidenceEntries(medication: PatientMedicationCard) {
@@ -386,47 +403,11 @@ function reviewTimestampSummary(record: PatientDetailResponse) {
     : `Revue au ${reviewTimestamp}`;
 }
 
-function queuePriorityLabel(priority?: string | null) {
-  if (priority === "disagreement_candidate") {
-    return "Désaccord";
+function confidencePercent(value?: number | null) {
+  if (value == null) {
+    return null;
   }
-  if (priority === "priority") {
-    return "À revoir vite";
-  }
-  if (priority === "reviewed") {
-    return "Déjà revu";
-  }
-  if (priority === "reviewable") {
-    return "Revue possible";
-  }
-  return "Hors périmètre";
-}
-
-function queuePriorityTone(priority?: string | null) {
-  if (priority === "disagreement_candidate") {
-    return "chip chip-high";
-  }
-  if (priority === "priority") {
-    return "chip chip-medium";
-  }
-  return "chip chip-neutral";
-}
-
-function queueReasonLabel(reason: string) {
-  const labels: Record<string, string> = {
-    lacks_clinician_review: "Sans revue clinicienne",
-    already_reviewed: "Revue enregistrée",
-    supported_medication_class: "Classe de première portée",
-    constructed_label_ambiguous: "Label construit ambigu",
-    rule_signal_present: "Signal règle présent",
-    clinician_rule_disagreement: "Clinicien vs règle",
-    not_in_phase5_review_scope: "Non aligné au grain analytique",
-  };
-  return labels[reason] ?? reason;
-}
-
-function reviewStatusLabel(status: ClinicianReviewStatus) {
-  return REVIEW_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
+  return `${Math.round(value * 100)}%`;
 }
 
 function reasonTagLabel(tag: string) {
@@ -446,7 +427,6 @@ function savedReviewSummary(review?: ClinicianReviewRecord | null) {
   }
   const parts = [
     `Niveau ${translateRiskLabel(review.label__clinician_priority_level)}`,
-    reviewStatusLabel(review.label__clinician_review_status),
     `v${review.review_version}`,
   ];
   if (review.reviewer_id) {
@@ -489,7 +469,7 @@ function PharmacistReviewPanel({
 }: Pick<MedicationAlertCardProps, "medication" | "reviewerId" | "onReviewerIdChange" | "onReviewSaved" | "reviewContext">) {
   const existingReview = medication.clinician_review;
   const [priorityLevel, setPriorityLevel] = useState<RiskLabel>(
-    existingReview?.label__clinician_priority_level ?? medication.deprescribing_priority_label,
+    existingReview?.label__clinician_priority_level ?? medication.ml_priority_label ?? "low",
   );
   const [reviewStatus, setReviewStatus] = useState<ClinicianReviewStatus>(
     existingReview?.label__clinician_review_status ?? "reviewed",
@@ -511,7 +491,7 @@ function PharmacistReviewPanel({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    setPriorityLevel(existingReview?.label__clinician_priority_level ?? medication.deprescribing_priority_label);
+    setPriorityLevel(existingReview?.label__clinician_priority_level ?? medication.ml_priority_label ?? "low");
     setReviewStatus(existingReview?.label__clinician_review_status ?? "reviewed");
     setPriorityScore(
       existingReview?.label__clinician_priority_score != null
@@ -522,7 +502,7 @@ function PharmacistReviewPanel({
     setSuggestedAction(existingReview?.label__clinician_suggested_action ?? "");
     setReasonTags(existingReview?.label__clinician_reason_tags ?? []);
     setSaveError(null);
-  }, [existingReview, medication.deprescribing_priority_label]);
+  }, [existingReview, medication.ml_priority_label]);
 
   function toggleReasonTag(tag: string) {
     setReasonTags((current) =>
@@ -599,13 +579,9 @@ function PharmacistReviewPanel({
             Grain: {medication.subject_id} • {medication.encounter_id} • {medication.medication_standardized}
           </p>
         </div>
-        <span className={queuePriorityTone(medication.review_queue_priority)}>
-          {queuePriorityLabel(medication.review_queue_priority)}
-        </span>
       </div>
 
       <div className="review-context-grid">
-        <span className="review-context-chip">Statut: {medication.medication_status ?? "Indisponible"}</span>
         <span className="review-context-chip">Charge: {reviewContext.burden}</span>
         {reviewContext.diagnoses ? (
           <span className="review-context-chip">Contexte: {reviewContext.diagnoses}</span>
@@ -614,27 +590,19 @@ function PharmacistReviewPanel({
           <span className="review-context-chip">Rénal: {reviewContext.renal}</span>
         ) : null}
         <span className="review-context-chip">
-          Règle dossier: {medication.deprescribing_priority_score} / {translateRiskLabel(medication.deprescribing_priority_label)}
+          {medication.ml_priority_label
+            ? `ML pilote: ${translateRiskLabel(medication.ml_priority_label)}${medicationMlConfidenceText(medication) ? ` / ${medicationMlConfidenceText(medication)}` : ""}`
+            : "ML pilote: hors première portée"}
         </span>
         {medication.benchmark__current_rule_available_flag ? (
           <span className="review-context-chip">
-            Benchmark courant: {medication.benchmark__current_rule_score ?? "N/D"} /{" "}
+            Debug règle: {medication.benchmark__current_rule_score ?? "N/D"} /{" "}
             {medication.benchmark__current_rule_score_level
               ? translateRiskLabel(medication.benchmark__current_rule_score_level)
               : "N/D"}
           </span>
         ) : null}
       </div>
-
-      {medication.review_queue_reasons && medication.review_queue_reasons.length > 0 ? (
-        <div className="chip-row review-reasons-row">
-          {medication.review_queue_reasons.map((reason) => (
-            <span key={reason} className="chip chip-neutral">
-              {queueReasonLabel(reason)}
-            </span>
-          ))}
-        </div>
-      ) : null}
 
       {existingReview ? (
         <div className="review-existing-summary">
@@ -802,26 +770,36 @@ function MedicationAlertCard({
   const evidence = evidenceEntries(medication);
   const classBadges = medicationClassBadges(medication);
   const detailsId = `medication-details-${medicationCardId(medication)}`;
+  const shortPosology = routeDoseFrequencyLine(medication);
 
   return (
-    <article className={medicationCardTone(medication.deprescribing_priority_label)}>
+    <article className={medicationCardTone(medicationPrimaryTone(medication))}>
       <header className="medication-alert-header medication-alert-header-compact">
         <div className="medication-alert-title-block">
           <p className="medication-alert-name">{medication.drug}</p>
           <div className="medication-alert-collapsed-meta">
-            <p className="medication-alert-meta">{routeDoseFrequencyLine(medication)}</p>
+            {shortPosology ? (
+              <p className="medication-alert-meta">{shortPosology}</p>
+            ) : null}
             {classBadges.length > 0 ? (
               <span className="chip chip-neutral">{classBadges[0]}</span>
             ) : null}
           </div>
         </div>
         <div className="medication-alert-score">
-          <span className={scoreBadgeTone(medication.deprescribing_priority_label)}>
-            IPD {medication.deprescribing_priority_score}
-          </span>
-          <span className={riskTone(medication.deprescribing_priority_label)}>
-            {translateRiskLabel(medication.deprescribing_priority_label)}
-          </span>
+          {medication.ml_priority_label ? (
+            <>
+              <span className={scoreBadgeTone(medication.ml_priority_label)}>
+                ML pilote
+              </span>
+              <span className={riskTone(medication.ml_priority_label)}>
+                {translateRiskLabel(medication.ml_priority_label)}
+                {medicationMlConfidenceText(medication) ? ` • ${medicationMlConfidenceText(medication)}` : ""}
+              </span>
+            </>
+          ) : (
+            <span className="chip chip-neutral">RxNorm</span>
+          )}
           <button
             type="button"
             className="medication-toggle"
@@ -835,7 +813,7 @@ function MedicationAlertCard({
       </header>
 
       {!expanded ? (
-        <p className="medication-alert-preview">{alertSignalText(medication)}</p>
+        <p className="medication-alert-preview">{medicationPrimarySummary(medication)}</p>
       ) : (
         <div id={detailsId} className="medication-alert-details">
           <p className="record-subtitle">
@@ -845,12 +823,19 @@ function MedicationAlertCard({
           </p>
 
           <section className="medication-alert-section">
-            <p className="medication-alert-section-title">Alerte signal</p>
-            <p className="medication-alert-copy">{alertSignalText(medication)}</p>
+            <p className="medication-alert-section-title">Signal principal</p>
+            <p className="medication-alert-copy">{medicationPrimarySummary(medication)}</p>
           </section>
 
           <section className="medication-alert-section">
-            <p className="medication-alert-section-title">Parce que</p>
+            <p className="medication-alert-section-title">Identité minimale</p>
+            <p className="medication-alert-copy">
+              {medicationMinimalIdentity(medication) || "Identité RxNorm minimale indisponible."}
+            </p>
+          </section>
+
+          <section className="medication-alert-section">
+            <p className="medication-alert-section-title">Contexte</p>
             <p className="medication-alert-copy">{contextualReasonText(medication)}</p>
           </section>
 
@@ -1042,8 +1027,8 @@ export function RecordDetailsPage() {
 
               <div className="dossier-hero-metrics">
                 <div className="score-spotlight">
-                  <span className="summary-label">Risque global</span>
-                  <strong>{record.patient_summary.highest_priority_score}</strong>
+                  <span className="summary-label">Signal global ML pilote</span>
+                  <strong>{confidencePercent(record.patient_summary.highest_priority_confidence) ?? "N/D"}</strong>
                   <span className={riskTone(record.patient_summary.highest_priority_label)}>
                     {translateRiskLabel(record.patient_summary.highest_priority_label)}
                   </span>
@@ -1214,11 +1199,11 @@ export function RecordDetailsPage() {
                         </p>
                       )}
                       <p className="details-section-copy">
-                        Tri décroissant par priorité actuelle de revue pharmaco-clinique.
+                        Tri décroissant par signal ML pilote lorsqu’il existe, sinon par ordre stable de revue.
                       </p>
                       <p className="details-section-copy">
-                        Repères de tri heuristiques pour trouver plus vite les cas utiles à revoir.
-                        Ils n’impliquent ni certitude de modèle ni validation clinique complète.
+                        Les molécules hors première portée restent visibles avec leur identité minimale RxNorm,
+                        sans badge ML.
                       </p>
                       <div className="chip-row review-queue-summary-row">
                         <span className="chip chip-neutral">
@@ -1230,11 +1215,6 @@ export function RecordDetailsPage() {
                         <span className="chip chip-medium">
                           Prioritaires {reviewQueueSummary.priority_rows}
                         </span>
-                        {reviewQueueSummary.disagreement_candidate_rows > 0 ? (
-                          <span className="chip chip-high">
-                            Désaccords {reviewQueueSummary.disagreement_candidate_rows}
-                          </span>
-                        ) : null}
                       </div>
                     </div>
                     <div className="medication-list-controls">
@@ -1317,38 +1297,6 @@ export function RecordDetailsPage() {
                   </div>
                 </section>
 
-                <DecisionSupportPanel
-                  title="Temps jusqu’au bénéfice"
-                  description="Repère d’aide pour mettre en balance bénéfice attendu et risque immédiat."
-                  summary={record.time_to_benefit_summary}
-                  items={record.time_to_benefit_note ? [record.time_to_benefit_note] : []}
-                  emptyLabel="Analyse non encore disponible."
-                />
-
-                <DecisionSupportPanel
-                  title="Taper / protocole de déprescription"
-                  description="Étapes de décroissance ou de sevrage lorsque la recommandation est structurée."
-                  summary={record.taper_protocol_summary}
-                  items={record.taper_protocol_steps ?? []}
-                  emptyLabel="Aucun protocole structuré disponible pour l’instant."
-                />
-
-                <DecisionSupportPanel
-                  title="Validation par les pairs / support de pratique"
-                  description="Zone prévue pour références Beers, STOPP-START ou appuis de consensus."
-                  summary={record.peer_validation_summary}
-                  items={record.peer_validation_references ?? []}
-                  emptyLabel="Support de pratique non encore câblé."
-                />
-
-                <DecisionSupportPanel
-                  title="Symptômes perçus par le patient"
-                  description="Signaux rapportés par le patient utiles pour contextualiser la révision thérapeutique."
-                  summary={record.patient_symptom_summary}
-                  items={record.patient_perceived_symptoms ?? []}
-                  emptyLabel="Aucun symptôme patient structuré disponible."
-                />
-
                 <section className="details-card decision-support-card">
                   <h2>Contexte de séjour</h2>
                   <p className="details-section-copy">
@@ -1356,17 +1304,19 @@ export function RecordDetailsPage() {
                   </p>
                   <div className="medications-list encounter-list">
                     {record.encounter_summaries.map((encounter) => (
-                      <article key={encounter.hadm_id} className="medication-card">
-                        <div className="record-topline">
+                      <details key={encounter.hadm_id} className="medication-card">
+                        <summary className="record-topline">
                           <div>
                             <p className="record-title">Séjour {encounter.hadm_id}</p>
                             <p className="record-subtitle">{encounterSubtitle(encounter)}</p>
                           </div>
                           <span className={riskTone(encounter.overall_priority_label)}>
-                            {translateRiskLabel(encounter.overall_priority_label)} •{" "}
-                            {encounter.overall_priority_score}
+                            {translateRiskLabel(encounter.overall_priority_label)}
+                            {confidencePercent(encounter.overall_priority_confidence)
+                              ? ` • ${confidencePercent(encounter.overall_priority_confidence)}`
+                              : ""}
                           </span>
-                        </div>
+                        </summary>
                         <div className="metric-grid metric-grid-compact">
                           <div className="metric-item">
                             <span className="metric-label">Médicaments</span>
@@ -1384,10 +1334,42 @@ export function RecordDetailsPage() {
                             </span>
                           ))}
                         </div>
-                      </article>
+                      </details>
                     ))}
                   </div>
                 </section>
+
+                <DecisionSupportPanel
+                  title="Time-to-benefit"
+                  description="Repère d’aide pour mettre en balance bénéfice attendu et risque immédiat."
+                  summary={record.time_to_benefit_summary}
+                  items={record.time_to_benefit_note ? [record.time_to_benefit_note] : []}
+                  emptyLabel="Analyse non encore disponible."
+                />
+
+                <DecisionSupportPanel
+                  title="Sevrage / protocole de déprescription"
+                  description="Étapes de décroissance ou de sevrage lorsque la recommandation est structurée."
+                  summary={record.taper_protocol_summary}
+                  items={record.taper_protocol_steps ?? []}
+                  emptyLabel="Aucun protocole structuré disponible pour l’instant."
+                />
+
+                <DecisionSupportPanel
+                  title="Validation par les pairs / support de pratique"
+                  description="Zone prévue pour références Beers, STOPP-START ou appuis de consensus."
+                  summary={record.peer_validation_summary}
+                  items={record.peer_validation_references ?? []}
+                  emptyLabel="Support de pratique non encore disponible."
+                />
+
+                <DecisionSupportPanel
+                  title="Symptômes perçus par le patient"
+                  description="Signaux rapportés par le patient utiles pour contextualiser la révision thérapeutique."
+                  summary={record.patient_symptom_summary}
+                  items={record.patient_perceived_symptoms ?? []}
+                  emptyLabel="Aucun symptôme patient structuré disponible."
+                />
               </aside>
             </div>
           </article>
