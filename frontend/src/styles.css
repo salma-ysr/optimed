@@ -636,6 +636,13 @@ button {
   letter-spacing: 0.01em;
 }
 
+.med-score-dot {
+  min-width: 14px;
+  width: 14px;
+  min-height: 14px;
+  height: 14px;
+}
+
 .med-score-badge-high {
   background: #ab3a20;
   color: #fff7f3;

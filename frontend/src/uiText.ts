@@ -33,6 +33,12 @@ const explanationMap: Record<string, string> = {
     "une instabilité tensionnelle ou du rythme cardiaque est présente",
   "high pain burden may complicate deprescribing prioritization":
     "une douleur importante peut compliquer la priorisation de déprescription",
+  "Rising creatinine or renal vulnerability is present.":
+    "une créatinine en hausse ou une vulnérabilité rénale est présente.",
+  "Sedating medication exposure is present.":
+    "une exposition à des médicaments sédatifs est présente.",
+  "Fall-prone medication exposure is present.":
+    "une exposition à des médicaments favorisant les chutes est présente.",
   "no major structured IPD rule triggered": "aucune règle IPD structurée majeure déclenchée",
   "no major rule triggered": "aucune règle majeure déclenchée",
 };

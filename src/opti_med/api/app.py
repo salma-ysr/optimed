@@ -1428,6 +1428,13 @@ def _review_time_explanation(review_row: dict) -> str:
 
 def _review_time_evidence(review_row: dict) -> dict[str, object]:
     evidence: dict[str, object] = {}
+    dose_value = review_row.get("dose_value")
+    dose_unit = review_row.get("dose_unit")
+    if dose_value is not None and not pd.isna(dose_value):
+        dose_parts = [str(dose_value)]
+        if dose_unit is not None and not pd.isna(dose_unit):
+            dose_parts.append(str(dose_unit))
+        evidence["dose"] = " ".join(part for part in dose_parts if part).strip()
     if review_row.get("route") is not None:
         evidence["route"] = review_row.get("route")
     if review_row.get("frequency") is not None:
@@ -1628,6 +1635,10 @@ def _build_patient_medication_cards(patient_rows: pd.DataFrame) -> list[PatientM
             drug=str(record["drug"]),
             drug_normalized=record.get("drug_normalized"),
             medication_classes=_medication_classes_from_record(record),
+            dose_value=record.get("dose_value"),
+            dose_unit=record.get("dose_unit"),
+            route=record.get("route"),
+            frequency=record.get("frequency"),
             starttime=str(record["starttime"]),
             stoptime=record.get("stoptime"),
             medication_episode_id=record.get("medication_episode_id"),
@@ -1920,6 +1931,10 @@ def _build_review_medication_card(
         ),
         "drug_normalized": review_row.get("medication_normalized"),
         "medication_classes": medication_classes,
+        "dose_value": review_row.get("dose_value"),
+        "dose_unit": review_row.get("dose_unit"),
+        "route": review_row.get("route"),
+        "frequency": review_row.get("frequency"),
         "starttime": str(review_row.get("review_timestamp") or ""),
         "stoptime": None,
         "medication_episode_id": review_row.get("selected_medication_event_id"),
@@ -1976,6 +1991,10 @@ def _build_review_medication_card(
             {
                 "medication_standardized": reviewable_row.get("medication_standardized"),
                 "medication_classes": medication_classes if alignment_key is not None else [],
+                "dose_value": reviewable_row.get("dose_value") or base_record.get("dose_value"),
+                "dose_unit": reviewable_row.get("dose_unit") or base_record.get("dose_unit"),
+                "route": reviewable_row.get("route") or base_record.get("route"),
+                "frequency": reviewable_row.get("frequency") or base_record.get("frequency"),
                 "modeling__row_id": reviewable_row.get("modeling__row_id"),
                 "first_scope_supported_class_flag": _safe_int(
                     reviewable_row.get("first_scope_supported_class_flag")

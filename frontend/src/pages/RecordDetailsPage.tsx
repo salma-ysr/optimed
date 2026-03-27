@@ -97,6 +97,9 @@ function riskTone(label: RiskLabel) {
 }
 
 function medicationClassBadges(medication: PatientMedicationCard) {
+  if (!medication.pharmacist_review_alignment && medication.antipsychotic_flag === 1) {
+    return [translateMedicationClass("Antipsychotic")];
+  }
   if (!medication.pharmacist_review_alignment) {
     return [];
   }
@@ -302,12 +305,16 @@ function medicationMinimalIdentity(medication: PatientMedicationCard) {
 
 function routeDoseFrequencyLine(medication: PatientMedicationCard) {
   const evidence = medication.deprescribing_priority_evidence_json ?? {};
-  const candidates = [evidence.route, evidence.frequency]
+  const dose =
+    medication.dose_value != null && medication.dose_value !== ""
+      ? [medication.dose_value, medication.dose_unit].filter(Boolean).join(" ")
+      : evidence.dose;
+  const candidates = [dose, medication.route, evidence.route, medication.frequency, evidence.frequency]
     .filter((value) => value != null && value !== "")
     .map((value) => String(value));
 
   if (candidates.length > 0) {
-    return candidates.join(" • ");
+    return [...new Set(candidates)].join(" • ");
   }
   return "";
 }
@@ -789,9 +796,10 @@ function MedicationAlertCard({
         <div className="medication-alert-score">
           {medication.ml_priority_label ? (
             <>
-              <span className={scoreBadgeTone(medication.ml_priority_label)}>
-                ML pilote
-              </span>
+              <span
+                className={`${scoreBadgeTone(medication.ml_priority_label)} med-score-dot`}
+                aria-hidden="true"
+              />
               <span className={riskTone(medication.ml_priority_label)}>
                 {translateRiskLabel(medication.ml_priority_label)}
                 {medicationMlConfidenceText(medication) ? ` • ${medicationMlConfidenceText(medication)}` : ""}
@@ -1280,7 +1288,7 @@ export function RecordDetailsPage() {
 
               <aside className="details-column details-column-right">
                 <section className="details-card decision-support-card">
-                  <h2>Rail d’aide à la décision</h2>
+                  <h2>Aire d’aide à la décision</h2>
                   <div className="chip-row">
                     {record.top_problem_flashes.map((flash) => (
                       <span key={`${flash.key}-${flash.label}`} className={riskTone(flash.severity)}>

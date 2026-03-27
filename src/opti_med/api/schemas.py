@@ -115,6 +115,10 @@ class MedicationRowSummary(BaseModel):
     drug: str
     drug_normalized: str | None = None
     medication_classes: list[str]
+    dose_value: str | None = None
+    dose_unit: str | None = None
+    route: str | None = None
+    frequency: str | None = None
     starttime: str
     stoptime: str | None = None
     medication_episode_id: str | None = None
@@ -503,6 +507,10 @@ class PatientMedicationCard(BaseModel):
     drug: str
     drug_normalized: str | None = None
     medication_classes: list[str]
+    dose_value: str | None = None
+    dose_unit: str | None = None
+    route: str | None = None
+    frequency: str | None = None
     starttime: str
     stoptime: str | None = None
     medication_episode_id: str | None = None

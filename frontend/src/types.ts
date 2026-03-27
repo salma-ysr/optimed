@@ -260,6 +260,10 @@ export interface PatientSummariesResponse {
 export interface MedicationRowSummary {
   drug: string;
   medication_classes: string[];
+  dose_value?: string | null;
+  dose_unit?: string | null;
+  route?: string | null;
+  frequency?: string | null;
   starttime: string;
   stoptime: string | null;
   deprescribing_priority_score: number;
